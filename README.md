@@ -37,7 +37,7 @@ This project is packaged as a standard Python package exposing the console comma
 
 ### Prerequisites
 * **Operating System**: Windows OS (v1 Windows-only)
-* **Python Runtime**: Python 3.9 - 3.12 (verified on 3.14.4 local environment)
+* **Python Runtime**: Python 3.9 - 3.13 (configured for CI validation) and Python 3.14.4 (locally tested)
 
 ---
 

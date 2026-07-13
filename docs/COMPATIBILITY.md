@@ -11,7 +11,7 @@ Only the following specific host environment has been verified via the E2E proto
 * **Operating System**: Windows 11 Pro (Version: 25H2, Build Number: 26200) [Verified on active host]
 * **Processor (CPU)**: Intel Core Ultra 7
 * **Graphics Hardware (GPU)**: Intel(R) Arc(TM) 140V GPU (detected via Registry display adapter query fallback) and Microsoft Remote Display Adapters [Verified on active host]
-* **Python Runtime**: Python 3.14.4
+* **Python Runtime**: Python 3.14.4 (locally tested on active host), Python 3.9 - 3.13 (configured for CI matrix validation)
 * **Local AI configurations**: Ollama installed but not running (empty models list), PyTorch and ONNX Runtime not installed in target workspace virtualenvs.
 * **Network reachability**: Direct local network available, outbound internet connectivity probe successful without proxy.
 

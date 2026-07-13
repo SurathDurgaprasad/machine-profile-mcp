@@ -179,6 +179,26 @@ def test_system_service_os_versions(mock_boot_time, mock_query_value, mock_open_
     assert summary.build_number == "26200"
 
 
+@patch("winreg.OpenKey")
+@patch("winreg.QueryValueEx")
+@patch("psutil.boot_time")
+@patch.dict("os.environ", {"MACHINE_PROFILE_ANONYMIZE": "true"})
+def test_system_service_anonymize(mock_boot_time, mock_query_value, mock_open_key):
+    """Test SystemService username and hostname redaction when MACHINE_PROFILE_ANONYMIZE is enabled."""
+    mock_boot_time.return_value = time.time() - 3600.0
+    mock_query_value.side_effect = [
+        ("Windows 11 Pro", 1),
+        ("23H2", 1),
+        ("22631", 1),
+    ]
+
+    service = SystemService()
+    summary = service.get_system_summary()
+
+    assert summary.username == "LocalUser"
+    assert summary.hostname == "HostMachine"
+
+
 # ==============================================================================
 # Process Service Tests
 # ==============================================================================
@@ -373,6 +393,8 @@ def test_ai_service_nvidia(mock_query_val, mock_enum_key, mock_query_info, mock_
     assert len(res.gpu) == 1
     assert res.gpu[0].name == "NVIDIA GeForce RTX 4070"
     assert res.gpu[0].source == "nvidia-smi"
+    assert res.gpu[0].adapter_type == "discrete"
+    assert res.gpu[0].dedicated_vram_bytes == 12288 * 1024 * 1024
     assert res.ollama_running
 
 
@@ -406,9 +428,59 @@ def test_ai_service_fallback_registry(mock_query_val, mock_enum_key, mock_query_
     assert len(res.gpu) == 1
     assert res.gpu[0].name == "Intel(R) Iris(R) Xe Graphics"
     assert res.gpu[0].vendor == "Intel Corporation"
-    assert res.gpu[0].vram_mb == 4096
+    # Integrated Intel GPU must not report dedicated VRAM
+    assert res.gpu[0].vram_mb is None
+    assert res.gpu[0].dedicated_vram_bytes is None
+    assert res.gpu[0].adapter_type == "integrated"
     assert res.gpu[0].source == "registry"
     assert not res.ollama_running
+
+
+@patch("shutil.which")
+@patch("windows_diagnostics_mcp.services.ai_service.safe_run_command")
+@patch("httpx.get")
+@patch("pathlib.Path.glob")
+@patch("winreg.OpenKey")
+@patch("winreg.QueryInfoKey")
+@patch("winreg.EnumKey")
+@patch("winreg.QueryValueEx")
+def test_ai_service_ambiguous_hardware(mock_query_val, mock_enum_key, mock_query_info, mock_open_key, mock_glob, mock_httpx_get, mock_safe_cmd, mock_which):
+    """Test that ambiguous hardware returns unknown and null VRAM when queried from registry."""
+    mock_which.return_value = None  # no nvidia-smi
+
+    # Test case 1: Intel Arc B580 (ambiguous registry display adapter)
+    mock_query_info.return_value = (1, 0, 0)
+    mock_enum_key.return_value = "0000"
+    mock_query_val.side_effect = [
+        ("Intel(R) Arc(TM) B580 Graphics", 1), # DriverDesc
+        ("Intel Corporation", 1),              # ProviderName
+        (8589934592, 1)                        # HardwareInformation.MemorySize
+    ]
+
+    mock_httpx_get.side_effect = Exception("Ollama not running")
+    mock_glob.return_value = []
+
+    service = AIService()
+    res = service.get_ai_environment()
+    assert len(res.gpu) == 1
+    assert res.gpu[0].name == "Intel(R) Arc(TM) B580 Graphics"
+    assert res.gpu[0].adapter_type == "unknown"
+    assert res.gpu[0].vram_mb is None
+    assert res.gpu[0].dedicated_vram_bytes is None
+
+    # Test case 2: Radeon RX Vega 56 (ambiguous registry display adapter)
+    mock_query_val.side_effect = [
+        ("Radeon RX Vega 56", 1),             # DriverDesc
+        ("Advanced Micro Devices, Inc.", 1),  # ProviderName
+        (8589934592, 1)                        # HardwareInformation.MemorySize
+    ]
+
+    res = service.get_ai_environment()
+    assert len(res.gpu) == 1
+    assert res.gpu[0].name == "Radeon RX Vega 56"
+    assert res.gpu[0].adapter_type == "unknown"
+    assert res.gpu[0].vram_mb is None
+    assert res.gpu[0].dedicated_vram_bytes is None
 
 
 # ==============================================================================
@@ -489,3 +561,16 @@ def test_health_service_degradations(mock_query_info, mock_open_key, mock_disk_u
     # Verify severity
     severities = {w.severity for w in res.warnings}
     assert "critical" in severities
+
+
+@patch("windows_diagnostics_mcp.server.mcp.run")
+def test_server_main_graceful_shutdown(mock_mcp_run):
+    """Test that main() exits cleanly with status 0 on KeyboardInterrupt."""
+    mock_mcp_run.side_effect = KeyboardInterrupt()
+
+    import sys
+    from windows_diagnostics_mcp.server import main
+
+    with patch.object(sys, "exit") as mock_exit:
+        main()
+        mock_exit.assert_called_once_with(0)

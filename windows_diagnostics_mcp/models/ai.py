@@ -6,6 +6,9 @@ class GPUInfoModel(BaseModel):
     name: str
     vendor: Optional[str] = None
     vram_mb: Optional[int] = None
+    adapter_type: str = "unknown"  # "integrated" | "discrete" | "virtual" | "unknown"
+    dedicated_vram_bytes: Optional[int] = None
+    shared_memory_bytes: Optional[int] = None
     status: str  # "available", "unavailable", "unsupported", "error"
     source: str  # "nvidia-smi", "registry", "system-api", "command", "other"
     driver_version: Optional[str] = None

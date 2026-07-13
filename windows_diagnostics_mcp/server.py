@@ -85,6 +85,9 @@ def main():
     try:
         logger.info("Starting MachineProfile MCP Server...")
         mcp.run(transport="stdio")
+    except KeyboardInterrupt:
+        logger.info("Server stopped cleanly via user interrupt.")
+        sys.exit(0)
     except Exception as e:
         logger.error(f"Error running server: {e}", exc_info=True)
         sys.exit(1)

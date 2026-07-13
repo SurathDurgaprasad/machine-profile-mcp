@@ -1,5 +1,6 @@
 import getpass
 import logging
+import os
 import platform
 import socket
 import time
@@ -8,9 +9,9 @@ from typing import Tuple
 import psutil
 
 from ..models.system import SystemSummaryModel
-from ..models.metadata import CollectionMetadataModel
+from ..models.metadata import CollectionMetadataModel, WarningItem
 
-logger = logging.getLogger("windows-diagnostics.services.system")
+logger = logging.getLogger("machine-profile.services.system")
 
 class SystemService:
     """
@@ -144,15 +145,21 @@ class SystemService:
             warnings=warnings
         )
 
-        try:
-            username = getpass.getuser()
-        except Exception:
-            username = "Unknown"
+        anonymize = os.environ.get("MACHINE_PROFILE_ANONYMIZE") == "true"
 
-        try:
-            hostname = socket.gethostname()
-        except Exception:
-            hostname = "Unknown"
+        if anonymize:
+            username = "LocalUser"
+            hostname = "HostMachine"
+        else:
+            try:
+                username = getpass.getuser()
+            except Exception:
+                username = "Unknown"
+
+            try:
+                hostname = socket.gethostname()
+            except Exception:
+                hostname = "Unknown"
 
         return SystemSummaryModel(
             edition=product_name,

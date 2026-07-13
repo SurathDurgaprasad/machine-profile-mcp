@@ -35,6 +35,33 @@ class AIService:
     Service for querying GPU information, Ollama models, virtual envs, and ML frameworks.
     """
 
+    def _classify_adapter(self, name: str, vendor: str) -> str:
+        """
+        Conservative classification of Windows display adapters.
+        Prefers returning "unknown" over unsupported inference.
+        """
+        name_lower = name.lower()
+        vendor_lower = vendor.lower()
+
+        # Virtual display adapters
+        if any(term in name_lower for term in ["remote display", "basic display", "virtual", "vmware", "citrix", "vbox", "hyper-v"]):
+            return "virtual"
+
+        # Explicitly supported high-confidence Intel integrated graphics patterns
+        if "intel" in name_lower or "intel" in vendor_lower:
+            if any(pat in name_lower for pat in ["iris", "uhd graphics", "hd graphics", "arc(tm) graphics", "arc(tm) 140v"]):
+                return "integrated"
+            return "unknown"
+
+        # Explicitly supported high-confidence AMD integrated graphics patterns
+        if "amd" in name_lower or "amd" in vendor_lower or "ati " in name_lower:
+            if name_lower in ("amd radeon graphics", "amd radeon(tm) graphics"):
+                return "integrated"
+            return "unknown"
+
+        # Do not infer type for unknown or other vendors (prefer unknown)
+        return "unknown"
+
     def _get_gpu_info_smi(self) -> List[GPUInfoModel]:
         """
         Attempts to query NVIDIA GPUs using nvidia-smi.
@@ -77,6 +104,9 @@ class AIService:
                                 name=parts[0],
                                 vendor="NVIDIA",
                                 vram_mb=vram_mb,
+                                adapter_type="discrete",
+                                dedicated_vram_bytes=vram_mb * 1024 * 1024 if vram_mb else None,
+                                shared_memory_bytes=None,
                                 status="available",
                                 source="nvidia-smi",
                                 driver_version=parts[1],
@@ -113,22 +143,38 @@ class AIService:
                             except FileNotFoundError:
                                 provider_name = "Unknown"
 
-                            vram_mb = None
+                            vram_bytes = None
                             try:
-                                vram_bytes, _ = winreg.QueryValueEx(adapter_key, "HardwareInformation.MemorySize")
-                                if isinstance(vram_bytes, bytes):
-                                    vram_val = int.from_bytes(vram_bytes, byteorder="little")
+                                vram_val, _ = winreg.QueryValueEx(adapter_key, "HardwareInformation.MemorySize")
+                                if isinstance(vram_val, bytes):
+                                    vram_bytes = int.from_bytes(vram_val, byteorder="little")
                                 else:
-                                    vram_val = int(vram_bytes)
-                                vram_mb = vram_val // (1024 * 1024)
+                                    vram_bytes = int(vram_val)
                             except FileNotFoundError:
                                 pass
 
+                            gpu_name = str(driver_desc)
+                            gpu_vendor = str(provider_name)
+                            adapter_type = self._classify_adapter(gpu_name, gpu_vendor)
+
+                            # Do not interpret registry HardwareInformation.MemorySize as dedicated VRAM when adapter type is unknown/integrated/virtual
+                            if adapter_type == "discrete":
+                                dedicated_bytes = vram_bytes
+                                vram_mb = vram_bytes // (1024 * 1024) if vram_bytes else None
+                                shared_bytes = None
+                            else:
+                                dedicated_bytes = None
+                                vram_mb = None
+                                shared_bytes = None
+
                             gpu_list.append(
                                 GPUInfoModel(
-                                    name=str(driver_desc),
-                                    vendor=str(provider_name),
+                                    name=gpu_name,
+                                    vendor=gpu_vendor,
                                     vram_mb=vram_mb,
+                                    adapter_type=adapter_type,
+                                    dedicated_vram_bytes=dedicated_bytes,
+                                    shared_memory_bytes=shared_bytes,
                                     status="available",
                                     source="registry"
                                 )
