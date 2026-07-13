@@ -4,9 +4,15 @@ import os
 import platform
 import socket
 import time
-import winreg
 from typing import Tuple
 import psutil
+
+try:
+    from winreg import HKEY_LOCAL_MACHINE, OpenKey, QueryValueEx
+except ImportError:
+    HKEY_LOCAL_MACHINE = None
+    OpenKey = None
+    QueryValueEx = None
 
 from ..models.system import SystemSummaryModel
 from ..models.metadata import CollectionMetadataModel, WarningItem
@@ -35,38 +41,40 @@ class SystemService:
             build_number = parts[2]
 
         try:
-            with winreg.OpenKey(
-                winreg.HKEY_LOCAL_MACHINE,
+            with OpenKey(
+                HKEY_LOCAL_MACHINE,
                 r"SOFTWARE\Microsoft\Windows NT\CurrentVersion",
             ) as key:
                 try:
-                    product, _ = winreg.QueryValueEx(key, "ProductName")
+                    product, _ = QueryValueEx(key, "ProductName")
                     if product:
                         product_name = str(product)
                 except FileNotFoundError:
                     pass
 
                 try:
-                    display_ver, _ = winreg.QueryValueEx(key, "DisplayVersion")
+                    display_ver, _ = QueryValueEx(key, "DisplayVersion")
                     if display_ver:
                         display_version = str(display_ver)
                 except FileNotFoundError:
                     # Fallback to older release ID registry if DisplayVersion is missing
                     try:
-                        release_id, _ = winreg.QueryValueEx(key, "ReleaseId")
+                        release_id, _ = QueryValueEx(key, "ReleaseId")
                         if release_id:
                             display_version = str(release_id)
                     except FileNotFoundError:
                         pass
 
                 try:
-                    build, _ = winreg.QueryValueEx(key, "CurrentBuild")
+                    build, _ = QueryValueEx(key, "CurrentBuild")
                     if build:
                         build_number = str(build)
                 except FileNotFoundError:
                     pass
-        except Exception as e:
-            logger.warning(f"Error reading registry for Windows version details: {e}")
+        except Exception:
+            logger.warning(
+                "Error reading registry for Windows version details", exc_info=True
+            )
 
         # Resolve Windows 10 vs 11 compatibility registry quirk.
         # Windows 11 registry "ProductName" remains hardcoded as "Windows 10" for legacy app compat.

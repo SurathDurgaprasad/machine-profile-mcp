@@ -79,8 +79,8 @@ def test_subprocess_helper_file_not_found(mock_sub_run):
 # ==============================================================================
 
 
-@patch("winreg.OpenKey")
-@patch("winreg.QueryValueEx")
+@patch("windows_diagnostics_mcp.services.system_service.OpenKey")
+@patch("windows_diagnostics_mcp.services.system_service.QueryValueEx")
 @patch("psutil.boot_time")
 def test_system_service(mock_boot_time, mock_query_value, mock_open_key):
     """Test SystemService with registry success and mock uptime."""
@@ -102,8 +102,8 @@ def test_system_service(mock_boot_time, mock_query_value, mock_open_key):
     assert summary.collection_metadata.status == "ok"
 
 
-@patch("winreg.OpenKey")
-@patch("winreg.QueryValueEx")
+@patch("windows_diagnostics_mcp.services.system_service.OpenKey")
+@patch("windows_diagnostics_mcp.services.system_service.QueryValueEx")
 @patch("psutil.boot_time")
 def test_system_service_registry_fallback(
     mock_boot_time, mock_query_value, mock_open_key
@@ -122,8 +122,8 @@ def test_system_service_registry_fallback(
     assert summary.collection_metadata.status == "partial"
 
 
-@patch("winreg.OpenKey")
-@patch("winreg.QueryValueEx")
+@patch("windows_diagnostics_mcp.services.system_service.OpenKey")
+@patch("windows_diagnostics_mcp.services.system_service.QueryValueEx")
 @patch("psutil.boot_time")
 def test_system_service_os_versions(mock_boot_time, mock_query_value, mock_open_key):
     """Test SystemService correct resolution of Windows 10 vs 11 versions across builds."""
@@ -164,8 +164,8 @@ def test_system_service_os_versions(mock_boot_time, mock_query_value, mock_open_
     assert summary.build_number == "26200"
 
 
-@patch("winreg.OpenKey")
-@patch("winreg.QueryValueEx")
+@patch("windows_diagnostics_mcp.services.system_service.OpenKey")
+@patch("windows_diagnostics_mcp.services.system_service.QueryValueEx")
 @patch("psutil.boot_time")
 @patch.dict("os.environ", {"MACHINE_PROFILE_ANONYMIZE": "true"})
 def test_system_service_anonymize(mock_boot_time, mock_query_value, mock_open_key):
