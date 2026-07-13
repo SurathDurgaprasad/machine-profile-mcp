@@ -1,0 +1,26 @@
+# Windows Diagnostics MCP - Requirements
+
+# Official Python MCP SDK
+mcp>=1.2.0
+
+# System monitoring and information
+psutil>=5.9.0
+
+# HTTP requests
+httpx>=0.24.0
+
+# Standard library modules (no installation needed)
+# platform, pathlib, socket, shutil, subprocess, json
+
+# Development tools
+pytest>=7.0.0
+black>=23.0.0
+flake8>=6.0.0
+isort>=5.12.0
+
+# Documentation
+mkdocs>=1.5.0
+mkdocs-material>=9.0.0
+
+# Type checking
+mypy>=1.5.0

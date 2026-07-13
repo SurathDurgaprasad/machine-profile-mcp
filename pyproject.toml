@@ -1,0 +1,53 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "machine-profile-mcp"
+version = "1.0.0"
+requires-python = ">=3.9"
+description = "A Windows machine profile and current environment diagnostic tool built with the Python MCP SDK"
+authors = [{ name = "Surath Durgaprasad", email = "noreply@github.com" }]
+readme = "README.md"
+license = { file = "LICENSE" }
+dependencies = [
+    "mcp>=1.2.0",
+    "httpx>=0.24.0",
+    "psutil>=5.9.0",
+]
+keywords = ["mcp", "windows", "diagnostics", "developer", "ai", "machine-profile"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Operating System :: Microsoft :: Windows",
+    "License :: OSI Approved :: MIT License",
+]
+
+[project.optional-dependencies]
+develop = [
+    "pytest>=7.0.0",
+    "black>=23.0.0",
+    "flake8>=6.0.0",
+    "isort>=5.12.0",
+    "mypy>=1.5.0",
+]
+
+docs = [
+    "mkdocs>=1.5.0",
+    "mkdocs-material>=9.0.0",
+]
+
+[project.scripts]
+machine-profile = "windows_diagnostics_mcp.server:main"
+
+[project.urls]
+Homepage = "https://github.com/SurathDurgaprasad/machine-profile-mcp"
+Issues = "https://github.com/SurathDurgaprasad/machine-profile-mcp/issues"
+Source = "https://github.com/SurathDurgaprasad/machine-profile-mcp"
+
+[tool.hatch.build.targets.wheel]
+packages = ["windows_diagnostics_mcp"]
