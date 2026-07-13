@@ -28,11 +28,11 @@ classifiers = [
 
 [project.optional-dependencies]
 develop = [
-    "pytest>=7.0.0",
-    "black>=23.0.0",
-    "flake8>=6.0.0",
-    "isort>=5.12.0",
-    "mypy>=1.5.0",
+    "pytest==9.0.3",
+    "black==26.5.1",
+    "flake8==7.3.0",
+    "isort==5.12.0",
+    "mypy==1.5.0",
 ]
 
 docs = [
@@ -50,3 +50,8 @@ Source = "https://github.com/SurathDurgaprasad/machine-profile-mcp"
 
 [tool.hatch.build.targets.wheel]
 packages = ["windows_diagnostics_mcp"]
+
+[tool.black]
+line-length = 88
+target-version = ["py310"]
+include = '\.pyi?$'

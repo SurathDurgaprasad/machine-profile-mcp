@@ -8,6 +8,7 @@ from ..models.metadata import CollectionMetadataModel
 
 logger = logging.getLogger("windows-diagnostics.services.process")
 
+
 class ProcessService:
     """
     Service for querying active processes and sorting them by CPU/Memory consumption.
@@ -29,12 +30,18 @@ class ProcessService:
 
         # First pass: trigger CPU check and cache process info in batch
         try:
-            for proc in psutil.process_iter(attrs=['name', 'memory_percent', 'memory_info']):
+            for proc in psutil.process_iter(
+                attrs=["name", "memory_percent", "memory_info"]
+            ):
                 try:
                     # Triggers measurement calculation since last call
                     proc.cpu_percent(interval=None)
                     active_processes.append((proc, proc.info))
-                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                except (
+                    psutil.NoSuchProcess,
+                    psutil.AccessDenied,
+                    psutil.ZombieProcess,
+                ):
                     continue
                 except Exception:
                     continue
@@ -53,10 +60,10 @@ class ProcessService:
                 cpu = proc.cpu_percent(interval=None)
 
                 # Retrieve batch-cached properties from info dict
-                name = info.get('name') or "unknown"
-                mem_percent = info.get('memory_percent') or 0.0
+                name = info.get("name") or "unknown"
+                mem_percent = info.get("memory_percent") or 0.0
 
-                mem_info = info.get('memory_info')
+                mem_info = info.get("memory_info")
                 mem_bytes = mem_info.rss if mem_info else 0
 
                 all_process_models.append(
@@ -65,7 +72,7 @@ class ProcessService:
                         name=name,
                         cpu_percent=round(cpu, 1),
                         memory_percent=round(mem_percent, 1),
-                        memory_bytes=mem_bytes
+                        memory_bytes=mem_bytes,
                     )
                 )
             except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
@@ -74,8 +81,12 @@ class ProcessService:
                 continue
 
         # Sort top processes
-        top_cpu = sorted(all_process_models, key=lambda x: x.cpu_percent, reverse=True)[:limit]
-        top_mem = sorted(all_process_models, key=lambda x: x.memory_bytes, reverse=True)[:limit]
+        top_cpu = sorted(all_process_models, key=lambda x: x.cpu_percent, reverse=True)[
+            :limit
+        ]
+        top_mem = sorted(
+            all_process_models, key=lambda x: x.memory_bytes, reverse=True
+        )[:limit]
 
         duration_ms = (time.perf_counter() - start_time) * 1000.0
 
@@ -83,12 +94,12 @@ class ProcessService:
             timestamp=time.time(),
             duration_ms=round(duration_ms, 2),
             status=status,
-            warnings=warnings
+            warnings=warnings,
         )
 
         return ProcessListModel(
             processes=all_process_models,
             top_cpu=top_cpu,
             top_memory=top_mem,
-            collection_metadata=metadata
+            collection_metadata=metadata,
         )

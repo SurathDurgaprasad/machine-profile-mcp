@@ -14,6 +14,7 @@ from ..services.health_service import HealthService
 logging.basicConfig(level=logging.INFO, format="%(levelname)s - %(message)s")
 logger = logging.getLogger("verify-services")
 
+
 def run_verification():
     logger.info("Initializing services...")
 
@@ -68,6 +69,7 @@ def run_verification():
     assert 0 <= health_data.health_score <= 100
 
     logger.info("SUCCESS: All core services initialized and validated successfully!")
+
 
 if __name__ == "__main__":
     try:

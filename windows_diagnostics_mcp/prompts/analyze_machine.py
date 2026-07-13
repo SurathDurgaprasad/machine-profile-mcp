@@ -1,13 +1,15 @@
 from mcp.server.fastmcp import FastMCP
 from mcp.types import PromptMessage, TextContent
 
+
 def register_prompts(mcp: FastMCP):
     """
     Registers the analyze_machine prompt template on FastMCP.
     """
+
     @mcp.prompt(
         name="analyze_machine",
-        description="Review this machine for overall health, developer readiness, AI readiness, performance concerns, and recommendations."
+        description="Review this machine for overall health, developer readiness, AI readiness, performance concerns, and recommendations.",
     )
     def analyze_machine() -> list[PromptMessage]:
         prompt_text = (
@@ -25,7 +27,6 @@ def register_prompts(mcp: FastMCP):
 
         return [
             PromptMessage(
-                role="user",
-                content=TextContent(type="text", text=prompt_text)
+                role="user", content=TextContent(type="text", text=prompt_text)
             )
         ]

@@ -3,20 +3,24 @@ from ..services.developer_service import DeveloperService
 from ..services.ai_service import AIService
 from ..models.developer import DevEnvStatusModel, ToolInfoModel
 
-def register_developer_tools(mcp: FastMCP, developer_service: DeveloperService, ai_service: AIService):
+
+def register_developer_tools(
+    mcp: FastMCP, developer_service: DeveloperService, ai_service: AIService
+):
     """
     Registers the developer_environment and installed_tools tools on FastMCP.
     """
+
     @mcp.tool(
         name="developer_environment",
-        description="Verify status of the developer environment, returning installed versions and paths for Python, Git, Node.js, Docker, Java, and VS Code."
+        description="Verify status of the developer environment, returning installed versions and paths for Python, Git, Node.js, Docker, Java, and VS Code.",
     )
     def developer_environment() -> DevEnvStatusModel:
         return developer_service.get_developer_environment()
 
     @mcp.tool(
         name="installed_tools",
-        description="Return a simplified check matrix of common developer and AI tools (Python, Git, Docker, Node, Java, VS Code, and Ollama) with versions."
+        description="Return a simplified check matrix of common developer and AI tools (Python, Git, Docker, Node, Java, VS Code, and Ollama) with versions.",
     )
     def installed_tools() -> dict:
         dev_env = developer_service.get_developer_environment()
@@ -30,7 +34,7 @@ def register_developer_tools(mcp: FastMCP, developer_service: DeveloperService, 
             installed=ai_env.ollama_installed,
             status="installed" if ai_env.ollama_installed else "not_detected",
             version=ollama_version,
-            path=None
+            path=None,
         )
 
         return {
@@ -40,5 +44,5 @@ def register_developer_tools(mcp: FastMCP, developer_service: DeveloperService, 
             "docker": dev_env.docker,
             "java": dev_env.java,
             "vscode": dev_env.vscode,
-            "ollama": ollama_info
+            "ollama": ollama_info,
         }

@@ -5,6 +5,7 @@ from typing import List, Tuple
 
 logger = logging.getLogger("windows-diagnostics.services.subprocess_helper")
 
+
 def safe_run_command(cmd: List[str], timeout: float = 3.0) -> Tuple[int, str, str]:
     """
     Executes a command safely on Windows.
@@ -30,7 +31,7 @@ def safe_run_command(cmd: List[str], timeout: float = 3.0) -> Tuple[int, str, st
             timeout=timeout,
             creationflags=creation_flags,
             close_fds=True,
-            text=False  # Work with raw bytes to prevent decoding crashes
+            text=False,  # Work with raw bytes to prevent decoding crashes
         )
 
         def decode_bytes(data: bytes) -> str:
@@ -48,9 +49,6 @@ def safe_run_command(cmd: List[str], timeout: float = 3.0) -> Tuple[int, str, st
 
     except subprocess.TimeoutExpired as e:
         logger.warning(f"Command timed out after {timeout} seconds: {' '.join(cmd)}")
-        # Attempt to decode any partial output captured before timeout
-        stdout_partial = e.stdout.decode("utf-8", errors="replace") if e.stdout else ""
-        stderr_partial = e.stderr.decode("utf-8", errors="replace") if e.stderr else ""
         raise TimeoutError(f"Command {' '.join(cmd)} timed out.") from e
 
     except FileNotFoundError as e:

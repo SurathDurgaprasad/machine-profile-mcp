@@ -6,13 +6,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 # Models
-from ..models.system import SystemSummaryModel
-from ..models.process import ProcessInfoModel, ProcessListModel
-from ..models.storage import DriveInfoModel, StorageSummaryModel
-from ..models.developer import ToolInfoModel, DevEnvStatusModel
-from ..models.ai import GPUInfoModel, OllamaModelInfoModel, AIEnvStatusModel
-from ..models.network import NetworkSummaryModel
-from ..models.health import MachineHealthModel, WarningItem, RecommendationItem
+from ..models.health import WarningItem
 
 # Services
 from ..services.system_service import SystemService
@@ -24,10 +18,10 @@ from ..services.network_service import NetworkService
 from ..services.health_service import HealthService
 from ..services.subprocess_helper import safe_run_command
 
-
 # ==============================================================================
 # Model Tests
 # ==============================================================================
+
 
 def test_models_instantiation():
     """Verify that Pydantic models initialize correctly and enforce schemas."""
@@ -36,7 +30,7 @@ def test_models_instantiation():
         component="gpu",
         code="GPU_UNAVAILABLE",
         message="Detailed GPU information could not be detected",
-        severity="warning"
+        severity="warning",
     )
     assert warn.component == "gpu"
     assert warn.severity == "warning"
@@ -46,13 +40,12 @@ def test_models_instantiation():
 # Subprocess Helper Tests
 # ==============================================================================
 
+
 @patch("subprocess.run")
 def test_subprocess_helper_success(mock_sub_run):
     """Test safe_run_command handles success and decodes outputs safely."""
     mock_sub_run.return_value = MagicMock(
-        returncode=0,
-        stdout=b"Command Success",
-        stderr=b"No errors"
+        returncode=0, stdout=b"Command Success", stderr=b"No errors"
     )
 
     code, stdout, stderr = safe_run_command(["test_cmd"])
@@ -65,6 +58,7 @@ def test_subprocess_helper_success(mock_sub_run):
 def test_subprocess_helper_timeout(mock_sub_run):
     """Test safe_run_command raises TimeoutError gracefully when command hangs."""
     import subprocess
+
     mock_sub_run.side_effect = subprocess.TimeoutExpired(cmd=["test_cmd"], timeout=2.0)
 
     with pytest.raises(TimeoutError):
@@ -84,6 +78,7 @@ def test_subprocess_helper_file_not_found(mock_sub_run):
 # System Service Tests
 # ==============================================================================
 
+
 @patch("winreg.OpenKey")
 @patch("winreg.QueryValueEx")
 @patch("psutil.boot_time")
@@ -91,9 +86,9 @@ def test_system_service(mock_boot_time, mock_query_value, mock_open_key):
     """Test SystemService with registry success and mock uptime."""
     mock_boot_time.return_value = time.time() - 3600.0  # 1 hour ago
     mock_query_value.side_effect = [
-        ("Windows 11 Pro", 1),       # ProductName
-        ("23H2", 1),                 # DisplayVersion
-        ("22631", 1),                # CurrentBuild
+        ("Windows 11 Pro", 1),  # ProductName
+        ("23H2", 1),  # DisplayVersion
+        ("22631", 1),  # CurrentBuild
     ]
 
     service = SystemService()
@@ -110,7 +105,9 @@ def test_system_service(mock_boot_time, mock_query_value, mock_open_key):
 @patch("winreg.OpenKey")
 @patch("winreg.QueryValueEx")
 @patch("psutil.boot_time")
-def test_system_service_registry_fallback(mock_boot_time, mock_query_value, mock_open_key):
+def test_system_service_registry_fallback(
+    mock_boot_time, mock_query_value, mock_open_key
+):
     """Test SystemService fallback when registry is missing or fails."""
     mock_boot_time.return_value = time.time() - 10  # 10s ago
     mock_open_key.side_effect = Exception("Registry inaccessible")
@@ -135,22 +132,14 @@ def test_system_service_os_versions(mock_boot_time, mock_query_value, mock_open_
     service = SystemService()
 
     # 1. Windows 10 22H2 (build 19045) -> remains Windows 10
-    mock_query_value.side_effect = [
-        ("Windows 10 Pro", 1),
-        ("22H2", 1),
-        ("19045", 1)
-    ]
+    mock_query_value.side_effect = [("Windows 10 Pro", 1), ("22H2", 1), ("19045", 1)]
     summary = service.get_system_summary()
     assert summary.edition == "Windows 10 Pro"
     assert summary.version == "22H2"
     assert summary.build_number == "19045"
 
     # 2. Windows 11 23H2 (registry returns Windows 10 Pro, build 22631) -> maps to Windows 11
-    mock_query_value.side_effect = [
-        ("Windows 10 Pro", 1),
-        ("23H2", 1),
-        ("22631", 1)
-    ]
+    mock_query_value.side_effect = [("Windows 10 Pro", 1), ("23H2", 1), ("22631", 1)]
     summary = service.get_system_summary()
     assert summary.edition == "Windows 11 Pro"
     assert summary.version == "23H2"
@@ -160,7 +149,7 @@ def test_system_service_os_versions(mock_boot_time, mock_query_value, mock_open_
     mock_query_value.side_effect = [
         ("Windows 10 Enterprise", 1),
         ("24H2", 1),
-        ("26100", 1)
+        ("26100", 1),
     ]
     summary = service.get_system_summary()
     assert summary.edition == "Windows 11 Enterprise"
@@ -168,11 +157,7 @@ def test_system_service_os_versions(mock_boot_time, mock_query_value, mock_open_
     assert summary.build_number == "26100"
 
     # 4. Windows 11 25H2 (registry returns Windows 10 Pro, build 26200) -> maps to Windows 11
-    mock_query_value.side_effect = [
-        ("Windows 10 Pro", 1),
-        ("25H2", 1),
-        ("26200", 1)
-    ]
+    mock_query_value.side_effect = [("Windows 10 Pro", 1), ("25H2", 1), ("26200", 1)]
     summary = service.get_system_summary()
     assert summary.edition == "Windows 11 Pro"
     assert summary.version == "25H2"
@@ -203,6 +188,7 @@ def test_system_service_anonymize(mock_boot_time, mock_query_value, mock_open_ke
 # Process Service Tests
 # ==============================================================================
 
+
 @patch("psutil.process_iter")
 def test_process_service(mock_process_iter):
     """Test ProcessService double-pass CPU querying and top sorting."""
@@ -213,7 +199,7 @@ def test_process_service(mock_process_iter):
     mock_proc1.info = {
         "name": "cpu_hog.exe",
         "memory_percent": 10.0,
-        "memory_info": MagicMock(rss=500000000)
+        "memory_info": MagicMock(rss=500000000),
     }
 
     mock_proc2 = MagicMock()
@@ -222,7 +208,7 @@ def test_process_service(mock_process_iter):
     mock_proc2.info = {
         "name": "mem_hog.exe",
         "memory_percent": 25.0,
-        "memory_info": MagicMock(rss=1000000000)
+        "memory_info": MagicMock(rss=1000000000),
     }
 
     mock_process_iter.return_value = [mock_proc1, mock_proc2]
@@ -242,6 +228,7 @@ def test_process_service(mock_process_iter):
 def test_process_service_disappearing_process(mock_process_iter):
     """Verify that a process disappearing mid-inspection does not crash the service."""
     import psutil
+
     mock_proc = MagicMock()
     mock_proc.pid = 999
     # Simulate process disappearing during the CPU sampling pass
@@ -262,19 +249,17 @@ def test_process_service_disappearing_process(mock_process_iter):
 # Storage Service Tests
 # ==============================================================================
 
+
 @patch("psutil.disk_partitions")
 @patch("psutil.disk_usage")
 def test_storage_service(mock_disk_usage, mock_disk_partitions):
     """Test StorageService physical drive fetching and utilization calculations."""
     mock_part1 = MagicMock(mountpoint="C:\\", fstype="NTFS", opts="rw")
-    mock_part2 = MagicMock(mountpoint="D:\\", fstype="exFAT", opts="cdrom") # optical
+    mock_part2 = MagicMock(mountpoint="D:\\", fstype="exFAT", opts="cdrom")  # optical
     mock_disk_partitions.return_value = [mock_part1, mock_part2]
 
     mock_disk_usage.return_value = MagicMock(
-        total=100_000_000,
-        used=40_000_000,
-        free=60_000_000,
-        percent=40.0
+        total=100_000_000, used=40_000_000, free=60_000_000, percent=40.0
     )
 
     service = StorageService()
@@ -310,20 +295,23 @@ def test_storage_service_permission_denied(mock_disk_usage, mock_disk_partitions
 # Developer Service Tests
 # ==============================================================================
 
+
 @patch("os.path.exists")
 @patch("shutil.which")
 @patch("windows_diagnostics_mcp.services.developer_service.safe_run_command")
 def test_developer_service(mock_safe_cmd, mock_which, mock_exists):
     """Test DeveloperService command checks and version parsing regexes."""
     mock_exists.return_value = False
-    mock_which.side_effect = lambda x: f"C:\\bin\\{x}" if x not in ("code", "code.cmd") else None
+    mock_which.side_effect = lambda x: (
+        f"C:\\bin\\{x}" if x not in ("code", "code.cmd") else None
+    )
 
     # safe_run_command outputs
     mock_safe_cmd.side_effect = [
-        (0, "git version 2.45.0.windows.1", ""), # git
-        (0, "v20.12.0", ""),                     # node
-        (0, "Docker version 25.0.3, build abc", ""), # docker
-        (0, "", "openjdk version \"17.0.2\" 2022-01-18") # java
+        (0, "git version 2.45.0.windows.1", ""),  # git
+        (0, "v20.12.0", ""),  # node
+        (0, "Docker version 25.0.3, build abc", ""),  # docker
+        (0, "", 'openjdk version "17.0.2" 2022-01-18'),  # java
     ]
 
     service = DeveloperService()
@@ -342,14 +330,16 @@ def test_developer_service(mock_safe_cmd, mock_which, mock_exists):
 def test_developer_service_command_timeout(mock_safe_cmd, mock_which, mock_exists):
     """Test DeveloperService handles CLI version timeouts gracefully."""
     mock_exists.return_value = False
-    mock_which.side_effect = lambda x: f"C:\\bin\\{x}" if x not in ("code", "code.cmd") else None
+    mock_which.side_effect = lambda x: (
+        f"C:\\bin\\{x}" if x not in ("code", "code.cmd") else None
+    )
 
     # Simulate git command timeout, others succeed
     mock_safe_cmd.side_effect = [
         TimeoutError("Command git timed out"),
         (0, "v20.12.0", ""),
         (0, "Docker version 25.0.3, build abc", ""),
-        (0, "", "openjdk version \"17.0.2\" 2022-01-18")
+        (0, "", 'openjdk version "17.0.2" 2022-01-18'),
     ]
 
     service = DeveloperService()
@@ -366,6 +356,7 @@ def test_developer_service_command_timeout(mock_safe_cmd, mock_which, mock_exist
 # AI Service Tests
 # ==============================================================================
 
+
 @patch("shutil.which")
 @patch("windows_diagnostics_mcp.services.ai_service.safe_run_command")
 @patch("httpx.get")
@@ -374,15 +365,36 @@ def test_developer_service_command_timeout(mock_safe_cmd, mock_which, mock_exist
 @patch("winreg.QueryInfoKey")
 @patch("winreg.EnumKey")
 @patch("winreg.QueryValueEx")
-def test_ai_service_nvidia(mock_query_val, mock_enum_key, mock_query_info, mock_open_key, mock_glob, mock_httpx_get, mock_safe_cmd, mock_which):
+def test_ai_service_nvidia(
+    mock_query_val,
+    mock_enum_key,
+    mock_query_info,
+    mock_open_key,
+    mock_glob,
+    mock_httpx_get,
+    mock_safe_cmd,
+    mock_which,
+):
     """Test AIService NVIDIA detection path."""
     mock_which.side_effect = lambda x: f"C:\\bin\\{x}"
-    mock_safe_cmd.return_value = (0, "NVIDIA GeForce RTX 4070, 551.23, 12288, 3072, 9216\n", "")
+    mock_safe_cmd.return_value = (
+        0,
+        "NVIDIA GeForce RTX 4070, 551.23, 12288, 3072, 9216\n",
+        "",
+    )
 
     # Ollama responds
     mock_httpx_get.return_value = MagicMock(
         status_code=200,
-        json=lambda: {"models": [{"name": "llama3:8b", "size": 4661224618, "details": {"family": "llama"}}]}
+        json=lambda: {
+            "models": [
+                {
+                    "name": "llama3:8b",
+                    "size": 4661224618,
+                    "details": {"family": "llama"},
+                }
+            ]
+        },
     )
 
     mock_glob.return_value = [pathlib.Path.cwd() / ".venv" / "pyvenv.cfg"]
@@ -406,17 +418,26 @@ def test_ai_service_nvidia(mock_query_val, mock_enum_key, mock_query_info, mock_
 @patch("winreg.QueryInfoKey")
 @patch("winreg.EnumKey")
 @patch("winreg.QueryValueEx")
-def test_ai_service_fallback_registry(mock_query_val, mock_enum_key, mock_query_info, mock_open_key, mock_glob, mock_httpx_get, mock_safe_cmd, mock_which):
+def test_ai_service_fallback_registry(
+    mock_query_val,
+    mock_enum_key,
+    mock_query_info,
+    mock_open_key,
+    mock_glob,
+    mock_httpx_get,
+    mock_safe_cmd,
+    mock_which,
+):
     """Test AIService fallback to registry for non-NVIDIA/integrated GPUs."""
     mock_which.return_value = None  # no nvidia-smi
 
     # Mock registry returns 1 display adapter (Intel Iris Xe)
-    mock_query_info.return_value = (1, 0, 0) # 1 subkey
+    mock_query_info.return_value = (1, 0, 0)  # 1 subkey
     mock_enum_key.return_value = "0000"
     mock_query_val.side_effect = [
-        ("Intel(R) Iris(R) Xe Graphics", 1), # DriverDesc
-        ("Intel Corporation", 1),            # ProviderName
-        (4294967296, 1)                      # HardwareInformation.MemorySize (4GB in bytes)
+        ("Intel(R) Iris(R) Xe Graphics", 1),  # DriverDesc
+        ("Intel Corporation", 1),  # ProviderName
+        (4294967296, 1),  # HardwareInformation.MemorySize (4GB in bytes)
     ]
 
     mock_httpx_get.side_effect = Exception("Ollama not running")
@@ -444,7 +465,16 @@ def test_ai_service_fallback_registry(mock_query_val, mock_enum_key, mock_query_
 @patch("winreg.QueryInfoKey")
 @patch("winreg.EnumKey")
 @patch("winreg.QueryValueEx")
-def test_ai_service_ambiguous_hardware(mock_query_val, mock_enum_key, mock_query_info, mock_open_key, mock_glob, mock_httpx_get, mock_safe_cmd, mock_which):
+def test_ai_service_ambiguous_hardware(
+    mock_query_val,
+    mock_enum_key,
+    mock_query_info,
+    mock_open_key,
+    mock_glob,
+    mock_httpx_get,
+    mock_safe_cmd,
+    mock_which,
+):
     """Test that ambiguous hardware returns unknown and null VRAM when queried from registry."""
     mock_which.return_value = None  # no nvidia-smi
 
@@ -452,9 +482,9 @@ def test_ai_service_ambiguous_hardware(mock_query_val, mock_enum_key, mock_query
     mock_query_info.return_value = (1, 0, 0)
     mock_enum_key.return_value = "0000"
     mock_query_val.side_effect = [
-        ("Intel(R) Arc(TM) B580 Graphics", 1), # DriverDesc
-        ("Intel Corporation", 1),              # ProviderName
-        (8589934592, 1)                        # HardwareInformation.MemorySize
+        ("Intel(R) Arc(TM) B580 Graphics", 1),  # DriverDesc
+        ("Intel Corporation", 1),  # ProviderName
+        (8589934592, 1),  # HardwareInformation.MemorySize
     ]
 
     mock_httpx_get.side_effect = Exception("Ollama not running")
@@ -470,9 +500,9 @@ def test_ai_service_ambiguous_hardware(mock_query_val, mock_enum_key, mock_query
 
     # Test case 2: Radeon RX Vega 56 (ambiguous registry display adapter)
     mock_query_val.side_effect = [
-        ("Radeon RX Vega 56", 1),             # DriverDesc
+        ("Radeon RX Vega 56", 1),  # DriverDesc
         ("Advanced Micro Devices, Inc.", 1),  # ProviderName
-        (8589934592, 1)                        # HardwareInformation.MemorySize
+        (8589934592, 1),  # HardwareInformation.MemorySize
     ]
 
     res = service.get_ai_environment()
@@ -487,13 +517,21 @@ def test_ai_service_ambiguous_hardware(mock_query_val, mock_enum_key, mock_query
 # Network Service Tests
 # ==============================================================================
 
+
 @patch("psutil.net_if_addrs")
 @patch("psutil.net_if_stats")
 @patch("windows_diagnostics_mcp.services.network_service.safe_run_command")
 @patch("winreg.OpenKey")
 @patch("winreg.QueryValueEx")
 @patch("socket.socket")
-def test_network_service_offline(mock_socket, mock_query_value, mock_open_key, mock_safe_cmd, mock_net_stats, mock_net_addrs):
+def test_network_service_offline(
+    mock_socket,
+    mock_query_value,
+    mock_open_key,
+    mock_safe_cmd,
+    mock_net_stats,
+    mock_net_addrs,
+):
     """Test NetworkService handles offline reachability timeout check gracefully."""
     mock_net_addrs.return_value = {}
     mock_net_stats.return_value = {}
@@ -519,12 +557,15 @@ def test_network_service_offline(mock_socket, mock_query_value, mock_open_key, m
 # Health Service Tests
 # ==============================================================================
 
+
 @patch("psutil.cpu_percent")
 @patch("psutil.virtual_memory")
 @patch("psutil.disk_usage")
 @patch("winreg.OpenKey")
 @patch("winreg.QueryInfoKey")
-def test_health_service_degradations(mock_query_info, mock_open_key, mock_disk_usage, mock_virt_mem, mock_cpu):
+def test_health_service_degradations(
+    mock_query_info, mock_open_key, mock_disk_usage, mock_virt_mem, mock_cpu
+):
     """Test HealthService score deduction engine for CPU, RAM, disk warnings."""
     # Extreme system stress: CPU 95%, RAM 90%, C: drive < 10GB free, 20 startup apps
     mock_cpu.return_value = 95.0
@@ -532,22 +573,17 @@ def test_health_service_degradations(mock_query_info, mock_open_key, mock_disk_u
 
     # 2 GB free (low disk)
     mock_disk_usage.return_value = MagicMock(
-        total=100 * (1024**3),
-        free=2 * (1024**3),
-        percent=98.0
+        total=100 * (1024**3), free=2 * (1024**3), percent=98.0
     )
 
     # 20 startup apps
     mock_query_info.side_effect = [
         (0, 10, 0),  # User run subkey values = 10
-        (0, 10, 0)   # System run subkey values = 10 -> total 20
+        (0, 10, 0),  # System run subkey values = 10 -> total 20
     ]
 
     mock_proc_service = MagicMock()
-    mock_proc_service.get_processes.return_value = MagicMock(
-        top_cpu=[],
-        top_memory=[]
-    )
+    mock_proc_service.get_processes.return_value = MagicMock(top_cpu=[], top_memory=[])
     mock_storage_service = MagicMock()
 
     service = HealthService(mock_proc_service, mock_storage_service)
@@ -568,7 +604,6 @@ def test_server_main_graceful_shutdown(mock_mcp_run):
     """Test that main() exits cleanly with status 0 on KeyboardInterrupt."""
     mock_mcp_run.side_effect = KeyboardInterrupt()
 
-    import sys
     from windows_diagnostics_mcp.server import main
 
     with patch.object(sys, "exit") as mock_exit:

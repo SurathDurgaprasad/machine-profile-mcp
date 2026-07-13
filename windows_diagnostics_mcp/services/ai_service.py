@@ -15,7 +15,8 @@ logger = logging.getLogger("windows-diagnostics.services.ai")
 
 # Eager main-thread imports for heavy C-extensions to prevent GIL-lock worker thread deadlocks
 try:
-    import torch
+    import torch  # noqa: F401
+
     _HAS_TORCH = True
 except ImportError:
     _HAS_TORCH = False
@@ -23,12 +24,14 @@ except Exception:
     _HAS_TORCH = False
 
 try:
-    import onnxruntime
+    import onnxruntime  # noqa: F401
+
     _HAS_ONNX = True
 except ImportError:
     _HAS_ONNX = False
 except Exception:
     _HAS_ONNX = False
+
 
 class AIService:
     """
@@ -44,12 +47,32 @@ class AIService:
         vendor_lower = vendor.lower()
 
         # Virtual display adapters
-        if any(term in name_lower for term in ["remote display", "basic display", "virtual", "vmware", "citrix", "vbox", "hyper-v"]):
+        if any(
+            term in name_lower
+            for term in [
+                "remote display",
+                "basic display",
+                "virtual",
+                "vmware",
+                "citrix",
+                "vbox",
+                "hyper-v",
+            ]
+        ):
             return "virtual"
 
         # Explicitly supported high-confidence Intel integrated graphics patterns
         if "intel" in name_lower or "intel" in vendor_lower:
-            if any(pat in name_lower for pat in ["iris", "uhd graphics", "hd graphics", "arc(tm) graphics", "arc(tm) 140v"]):
+            if any(
+                pat in name_lower
+                for pat in [
+                    "iris",
+                    "uhd graphics",
+                    "hd graphics",
+                    "arc(tm) graphics",
+                    "arc(tm) 140v",
+                ]
+            ):
                 return "integrated"
             return "unknown"
 
@@ -71,7 +94,7 @@ class AIService:
         if not nvidia_smi:
             for path in [
                 r"C:\Windows\System32\nvidia-smi.exe",
-                r"C:\Program Files\NVIDIA Corporation\NVSMI\nvidia-smi.exe"
+                r"C:\Program Files\NVIDIA Corporation\NVSMI\nvidia-smi.exe",
             ]:
                 if os.path.exists(path):
                     nvidia_smi = path
@@ -85,9 +108,9 @@ class AIService:
                 [
                     nvidia_smi,
                     "--query-gpu=name,driver_version,memory.total,memory.used,memory.free",
-                    "--format=csv,noheader,nounits"
+                    "--format=csv,noheader,nounits",
                 ],
-                timeout=2.5
+                timeout=2.5,
             )
             if code == 0:
                 for line in stdout.strip().split("\n"):
@@ -105,13 +128,15 @@ class AIService:
                                 vendor="NVIDIA",
                                 vram_mb=vram_mb,
                                 adapter_type="discrete",
-                                dedicated_vram_bytes=vram_mb * 1024 * 1024 if vram_mb else None,
+                                dedicated_vram_bytes=(
+                                    vram_mb * 1024 * 1024 if vram_mb else None
+                                ),
                                 shared_memory_bytes=None,
                                 status="available",
                                 source="nvidia-smi",
                                 driver_version=parts[1],
                                 memory_used=used_mb,
-                                memory_free=free_mb
+                                memory_free=free_mb,
                             )
                         )
         except Exception as e:
@@ -134,20 +159,28 @@ class AIService:
                     try:
                         with winreg.OpenKey(class_key, subkey_name) as adapter_key:
                             try:
-                                driver_desc, _ = winreg.QueryValueEx(adapter_key, "DriverDesc")
+                                driver_desc, _ = winreg.QueryValueEx(
+                                    adapter_key, "DriverDesc"
+                                )
                             except FileNotFoundError:
                                 continue
 
                             try:
-                                provider_name, _ = winreg.QueryValueEx(adapter_key, "ProviderName")
+                                provider_name, _ = winreg.QueryValueEx(
+                                    adapter_key, "ProviderName"
+                                )
                             except FileNotFoundError:
                                 provider_name = "Unknown"
 
                             vram_bytes = None
                             try:
-                                vram_val, _ = winreg.QueryValueEx(adapter_key, "HardwareInformation.MemorySize")
+                                vram_val, _ = winreg.QueryValueEx(
+                                    adapter_key, "HardwareInformation.MemorySize"
+                                )
                                 if isinstance(vram_val, bytes):
-                                    vram_bytes = int.from_bytes(vram_val, byteorder="little")
+                                    vram_bytes = int.from_bytes(
+                                        vram_val, byteorder="little"
+                                    )
                                 else:
                                     vram_bytes = int(vram_val)
                             except FileNotFoundError:
@@ -160,7 +193,9 @@ class AIService:
                             # Do not interpret registry HardwareInformation.MemorySize as dedicated VRAM when adapter type is unknown/integrated/virtual
                             if adapter_type == "discrete":
                                 dedicated_bytes = vram_bytes
-                                vram_mb = vram_bytes // (1024 * 1024) if vram_bytes else None
+                                vram_mb = (
+                                    vram_bytes // (1024 * 1024) if vram_bytes else None
+                                )
                                 shared_bytes = None
                             else:
                                 dedicated_bytes = None
@@ -176,7 +211,7 @@ class AIService:
                                     dedicated_vram_bytes=dedicated_bytes,
                                     shared_memory_bytes=shared_bytes,
                                     status="available",
-                                    source="registry"
+                                    source="registry",
                                 )
                             )
                     except Exception:
@@ -212,7 +247,9 @@ class AIService:
         """
         installed = shutil.which("ollama") is not None
         if not installed:
-            user_ollama = os.path.expandvars(r"%LocalAppData%\Programs\Ollama\ollama.exe")
+            user_ollama = os.path.expandvars(
+                r"%LocalAppData%\Programs\Ollama\ollama.exe"
+            )
             if os.path.exists(user_ollama):
                 installed = True
 
@@ -232,7 +269,7 @@ class AIService:
                             name=m.get("name", "unknown"),
                             size=m.get("size", 0),
                             family=details.get("family"),
-                            format=details.get("format")
+                            format=details.get("format"),
                         )
                     )
         except Exception:
@@ -250,7 +287,14 @@ class AIService:
         try:
             root_dir = pathlib.Path.cwd()
             for path in root_dir.glob("**/pyvenv.cfg"):
-                skip_dirs = {".git", "node_modules", "AppData", "Local", "Temp", "Library"}
+                skip_dirs = {
+                    ".git",
+                    "node_modules",
+                    "AppData",
+                    "Local",
+                    "Temp",
+                    "Library",
+                }
                 if any(part in skip_dirs for part in path.parts):
                     continue
 
@@ -281,19 +325,23 @@ class AIService:
                     GPUInfoModel(
                         name="No dedicated GPU detected",
                         status="unavailable",
-                        source="registry"
+                        source="registry",
                     )
                 ]
         except Exception as e:
             logger.error(f"Error checking GPU information: {e}")
             gpu_info = [
                 GPUInfoModel(
-                    name="GPU check failed",
-                    status="error",
-                    source="system-api"
+                    name="GPU check failed", status="error", source="system-api"
                 )
             ]
-            warnings.append(WarningItem(component="gpu", code="GPU_CHECK_FAILED", message=f"GPU query failed: {str(e)}"))
+            warnings.append(
+                WarningItem(
+                    component="gpu",
+                    code="GPU_CHECK_FAILED",
+                    message=f"GPU query failed: {str(e)}",
+                )
+            )
             status = "partial"
 
         # Ollama
@@ -301,7 +349,13 @@ class AIService:
             ollama_installed, ollama_running, ollama_models = self._get_ollama_details()
         except Exception as e:
             ollama_installed, ollama_running, ollama_models = False, False, []
-            warnings.append(WarningItem(component="ollama", code="OLLAMA_CHECK_FAILED", message=f"Ollama query failed: {str(e)}"))
+            warnings.append(
+                WarningItem(
+                    component="ollama",
+                    code="OLLAMA_CHECK_FAILED",
+                    message=f"Ollama query failed: {str(e)}",
+                )
+            )
             status = "partial"
 
         # PyTorch Check
@@ -310,13 +364,18 @@ class AIService:
         pytorch_cuda = None
         if _HAS_TORCH:
             try:
-                import torch
                 pytorch_installed = True
                 pytorch_version = str(torch.__version__)
                 pytorch_cuda = torch.cuda.is_available()
             except Exception as e:
                 logger.debug(f"Pytorch check failed: {e}")
-                warnings.append(WarningItem(component="pytorch", code="PYTORCH_CHECK_FAILED", message=f"PyTorch check failed: {str(e)}"))
+                warnings.append(
+                    WarningItem(
+                        component="pytorch",
+                        code="PYTORCH_CHECK_FAILED",
+                        message=f"PyTorch check failed: {str(e)}",
+                    )
+                )
                 status = "partial"
 
         # ONNX Runtime Check
@@ -325,14 +384,22 @@ class AIService:
         onnxruntime_gpu = None
         if _HAS_ONNX:
             try:
-                import onnxruntime
                 onnxruntime_installed = True
                 onnxruntime_version = str(onnxruntime.__version__)
                 providers = onnxruntime.get_available_providers()
-                onnxruntime_gpu = "CUDAExecutionProvider" in providers or "DmlExecutionProvider" in providers
+                onnxruntime_gpu = (
+                    "CUDAExecutionProvider" in providers
+                    or "DmlExecutionProvider" in providers
+                )
             except Exception as e:
                 logger.debug(f"ONNX Runtime check failed: {e}")
-                warnings.append(WarningItem(component="onnxruntime", code="ONNXRUNTIME_CHECK_FAILED", message=f"ONNX Runtime check failed: {str(e)}"))
+                warnings.append(
+                    WarningItem(
+                        component="onnxruntime",
+                        code="ONNXRUNTIME_CHECK_FAILED",
+                        message=f"ONNX Runtime check failed: {str(e)}",
+                    )
+                )
                 status = "partial"
 
         # Virtual Envs
@@ -340,7 +407,13 @@ class AIService:
             virtual_envs = self._detect_virtual_envs()
         except Exception as e:
             virtual_envs = []
-            warnings.append(WarningItem(component="virtualenv", code="VIRTUALENV_CHECK_FAILED", message=f"Virtualenv scanning failed: {str(e)}"))
+            warnings.append(
+                WarningItem(
+                    component="virtualenv",
+                    code="VIRTUALENV_CHECK_FAILED",
+                    message=f"Virtualenv scanning failed: {str(e)}",
+                )
+            )
             status = "partial"
 
         duration_ms = (time.perf_counter() - start_time) * 1000.0
@@ -349,7 +422,7 @@ class AIService:
             timestamp=time.time(),
             duration_ms=round(duration_ms, 2),
             status=status,
-            warnings=warnings
+            warnings=warnings,
         )
 
         return AIEnvStatusModel(
@@ -364,5 +437,5 @@ class AIService:
             onnxruntime_version=onnxruntime_version,
             onnxruntime_gpu_available=onnxruntime_gpu,
             python_virtual_environments=virtual_envs,
-            collection_metadata=metadata
+            collection_metadata=metadata,
         )

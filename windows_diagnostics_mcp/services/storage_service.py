@@ -7,6 +7,7 @@ from ..models.metadata import CollectionMetadataModel, WarningItem
 
 logger = logging.getLogger("windows-diagnostics.services.storage")
 
+
 class StorageService:
     """
     Service for querying disk partitions and storage space utilization.
@@ -22,7 +23,9 @@ class StorageService:
         status = "ok"
 
         try:
-            partitions = psutil.disk_partitions(all=True)  # Retrieve all partitions (including removable/network/locked)
+            partitions = psutil.disk_partitions(
+                all=True
+            )  # Retrieve all partitions (including removable/network/locked)
         except Exception as e:
             status = "error"
             logger.error(f"Error enumerating disk partitions: {e}")
@@ -35,9 +38,7 @@ class StorageService:
                 # Still record optical drive as unavailable
                 drives.append(
                     DriveInfoModel(
-                        drive=part.mountpoint,
-                        fstype="Optical",
-                        status="unavailable"
+                        drive=part.mountpoint, fstype="Optical", status="unavailable"
                     )
                 )
                 continue
@@ -52,7 +53,7 @@ class StorageService:
                         used_bytes=usage.used,
                         free_bytes=usage.free,
                         usage_percent=round(usage.percent, 1),
-                        status="available"
+                        status="available",
                     )
                 )
             except PermissionError:
@@ -61,7 +62,7 @@ class StorageService:
                     DriveInfoModel(
                         drive=part.mountpoint,
                         fstype=part.fstype,
-                        status="permission_denied"
+                        status="permission_denied",
                     )
                 )
                 warnings.append(
@@ -69,7 +70,7 @@ class StorageService:
                         component="storage",
                         code="PARTITION_ACCESS_DENIED",
                         message=f"Access denied reading partition space on {part.mountpoint}",
-                        severity="warning"
+                        severity="warning",
                     )
                 )
                 status = "partial"
@@ -77,9 +78,7 @@ class StorageService:
                 # Removable drive not plugged in or unmounted partition
                 drives.append(
                     DriveInfoModel(
-                        drive=part.mountpoint,
-                        fstype=part.fstype,
-                        status="unavailable"
+                        drive=part.mountpoint, fstype=part.fstype, status="unavailable"
                     )
                 )
             except Exception as e:
@@ -87,9 +86,7 @@ class StorageService:
                 logger.warning(f"Error reading drive {part.mountpoint}: {e}")
                 drives.append(
                     DriveInfoModel(
-                        drive=part.mountpoint,
-                        fstype=part.fstype,
-                        status="unavailable"
+                        drive=part.mountpoint, fstype=part.fstype, status="unavailable"
                     )
                 )
                 warnings.append(
@@ -97,7 +94,7 @@ class StorageService:
                         component="storage",
                         code="PARTITION_QUERY_FAILED",
                         message=f"Failed to query partition {part.mountpoint}: {str(e)}",
-                        severity="warning"
+                        severity="warning",
                     )
                 )
                 status = "partial"
@@ -108,10 +105,7 @@ class StorageService:
             timestamp=time.time(),
             duration_ms=round(duration_ms, 2),
             status=status,
-            warnings=warnings
+            warnings=warnings,
         )
 
-        return StorageSummaryModel(
-            drives=drives,
-            collection_metadata=metadata
-        )
+        return StorageSummaryModel(drives=drives, collection_metadata=metadata)

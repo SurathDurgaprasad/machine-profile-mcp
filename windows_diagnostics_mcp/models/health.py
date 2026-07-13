@@ -3,8 +3,10 @@ from typing import List
 from .process import ProcessInfoModel
 from .metadata import CollectionMetadataModel, WarningItem
 
+
 class RecommendationItem(BaseModel):
     message: str
+
 
 class MachineHealthModel(BaseModel):
     health_score: int

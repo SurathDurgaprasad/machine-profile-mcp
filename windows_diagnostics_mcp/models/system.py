@@ -1,6 +1,7 @@
 from pydantic import BaseModel
 from .metadata import CollectionMetadataModel
 
+
 class SystemSummaryModel(BaseModel):
     edition: str
     version: str

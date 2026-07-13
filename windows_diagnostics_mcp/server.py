@@ -40,7 +40,7 @@ from windows_diagnostics_mcp.prompts.analyze_machine import register_prompts
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    handlers=[logging.StreamHandler(sys.stderr)]
+    handlers=[logging.StreamHandler(sys.stderr)],
 )
 logger = logging.getLogger("machine-profile")
 

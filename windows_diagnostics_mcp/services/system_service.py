@@ -13,6 +13,7 @@ from ..models.metadata import CollectionMetadataModel, WarningItem
 
 logger = logging.getLogger("machine-profile.services.system")
 
+
 class SystemService:
     """
     Service for querying high-level Windows system metadata and uptime.
@@ -29,14 +30,14 @@ class SystemService:
         build_number = platform.version()
 
         # Fallback build extraction from platform.version() (e.g., '10.0.22631')
-        parts = build_number.split('.')
+        parts = build_number.split(".")
         if len(parts) >= 3:
             build_number = parts[2]
 
         try:
             with winreg.OpenKey(
                 winreg.HKEY_LOCAL_MACHINE,
-                r"SOFTWARE\Microsoft\Windows NT\CurrentVersion"
+                r"SOFTWARE\Microsoft\Windows NT\CurrentVersion",
             ) as key:
                 try:
                     product, _ = winreg.QueryValueEx(key, "ProductName")
@@ -72,7 +73,7 @@ class SystemService:
         # Build numbers >= 22000 indicate Windows 11.
         if product_name.startswith("Windows 10"):
             try:
-                clean_build = build_number.split('.')[-1]
+                clean_build = build_number.split(".")[-1]
                 if clean_build.isdigit() and int(clean_build) >= 22000:
                     product_name = product_name.replace("Windows 10", "Windows 11", 1)
             except Exception:
@@ -117,11 +118,15 @@ class SystemService:
                     WarningItem(
                         component="system",
                         code="REGISTRY_VERSION_UNAVAILABLE",
-                        message="Failed to query Windows version/build from registry."
+                        message="Failed to query Windows version/build from registry.",
                     )
                 )
         except Exception as e:
-            product_name, display_version, build_number = platform.system(), "Unknown", platform.version()
+            product_name, display_version, build_number = (
+                platform.system(),
+                "Unknown",
+                platform.version(),
+            )
             status = "partial"
             logger.warning(f"Failed to gather Windows details: {e}")
 
@@ -142,7 +147,7 @@ class SystemService:
             timestamp=time.time(),
             duration_ms=round(duration_ms, 2),
             status=status,
-            warnings=warnings
+            warnings=warnings,
         )
 
         anonymize = os.environ.get("MACHINE_PROFILE_ANONYMIZE") == "true"
@@ -170,5 +175,5 @@ class SystemService:
             username=username,
             uptime_seconds=uptime_seconds,
             uptime_formatted=uptime_formatted,
-            collection_metadata=metadata
+            collection_metadata=metadata,
         )

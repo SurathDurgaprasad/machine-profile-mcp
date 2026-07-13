@@ -2,6 +2,7 @@ from pydantic import BaseModel
 from typing import List, Optional
 from .metadata import CollectionMetadataModel
 
+
 class NetworkSummaryModel(BaseModel):
     hostname: str
     local_ips: List[str]

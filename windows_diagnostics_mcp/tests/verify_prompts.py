@@ -7,6 +7,7 @@ from server import mcp
 logging.basicConfig(level=logging.INFO, format="%(levelname)s - %(message)s")
 logger = logging.getLogger("verify-prompts")
 
+
 def run_prompt_verification():
     logger.info("Starting prompt registration check...")
 
@@ -28,9 +29,12 @@ def run_prompt_verification():
             if not p.description:
                 logger.error(f"Prompt '{p.name}' is missing a description!")
                 sys.exit(1)
-            logger.info(f"Prompt '{p.name}' verified: OK. Description: '{p.description}'")
+            logger.info(
+                f"Prompt '{p.name}' verified: OK. Description: '{p.description}'"
+            )
 
     logger.info("SUCCESS: The MCP Prompt is correctly registered and documented!")
+
 
 if __name__ == "__main__":
     run_prompt_verification()

@@ -1,5 +1,4 @@
 import logging
-import os
 import socket
 import time
 import winreg
@@ -11,6 +10,7 @@ from ..models.metadata import CollectionMetadataModel, WarningItem
 from .subprocess_helper import safe_run_command
 
 logger = logging.getLogger("windows-diagnostics.services.network")
+
 
 class NetworkService:
     """
@@ -27,7 +27,9 @@ class NetworkService:
             for interface_name, addresses in interfaces.items():
                 for addr in addresses:
                     # Filter for IPv4 and skip loopback
-                    if addr.family == socket.AF_INET and not addr.address.startswith("127."):
+                    if addr.family == socket.AF_INET and not addr.address.startswith(
+                        "127."
+                    ):
                         ips.append(addr.address)
         except Exception as e:
             logger.warning(f"Error querying network interface addresses: {e}")
@@ -43,12 +45,18 @@ class NetworkService:
         Retrieves the default gateway IP on Windows by parsing the active 0.0.0.0 route.
         """
         try:
-            code, stdout, stderr = safe_run_command(["route", "print", "0.0.0.0"], timeout=2.0)
+            code, stdout, stderr = safe_run_command(
+                ["route", "print", "0.0.0.0"], timeout=2.0
+            )
             if code == 0:
                 for line in stdout.splitlines():
                     parts = line.split()
                     # A route entry usually lists: Destination Netmask Gateway Interface Metric
-                    if len(parts) >= 4 and parts[0] == "0.0.0.0" and parts[1] == "0.0.0.0":
+                    if (
+                        len(parts) >= 4
+                        and parts[0] == "0.0.0.0"
+                        and parts[1] == "0.0.0.0"
+                    ):
                         return parts[2]
         except Exception as e:
             logger.debug(f"Error querying default gateway via route command: {e}")
@@ -62,19 +70,23 @@ class NetworkService:
         try:
             with winreg.OpenKey(
                 winreg.HKEY_LOCAL_MACHINE,
-                r"SYSTEM\CurrentControlSet\Services\Tcpip\Parameters"
+                r"SYSTEM\CurrentControlSet\Services\Tcpip\Parameters",
             ) as key:
                 try:
                     ns, _ = winreg.QueryValueEx(key, "NameServer")
                     if ns:
-                        dns_servers.extend([x.strip() for x in ns.split(",") if x.strip()])
+                        dns_servers.extend(
+                            [x.strip() for x in ns.split(",") if x.strip()]
+                        )
                 except FileNotFoundError:
                     pass
 
                 try:
                     dhcp_ns, _ = winreg.QueryValueEx(key, "DhcpNameServer")
                     if dhcp_ns:
-                        dns_servers.extend([x.strip() for x in dhcp_ns.split() if x.strip()])
+                        dns_servers.extend(
+                            [x.strip() for x in dhcp_ns.split() if x.strip()]
+                        )
                 except FileNotFoundError:
                     pass
         except Exception as e:
@@ -85,7 +97,7 @@ class NetworkService:
             try:
                 with winreg.OpenKey(
                     winreg.HKEY_LOCAL_MACHINE,
-                    r"SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces"
+                    r"SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces",
                 ) as interfaces_key:
                     info = winreg.QueryInfoKey(interfaces_key)
                     for i in range(info[0]):
@@ -96,7 +108,11 @@ class NetworkService:
                                     val, _ = winreg.QueryValueEx(subkey, val_name)
                                     if val:
                                         dns_servers.extend(
-                                            [x.strip() for x in val.replace(",", " ").split() if x.strip()]
+                                            [
+                                                x.strip()
+                                                for x in val.replace(",", " ").split()
+                                                if x.strip()
+                                            ]
                                         )
                                 except FileNotFoundError:
                                     pass
@@ -115,10 +131,10 @@ class NetworkService:
             Reachability status: "success" | "failed" | "timeout" | "unknown"
         """
         targets = [
-            ("8.8.8.8", 53),                 # Google DNS
-            ("1.1.1.1", 53),                 # Cloudflare DNS
-            ("clients3.google.com", 80),     # Google connectivity check
-            ("www.msftconnecttest.com", 80)  # Microsoft connectivity check
+            ("8.8.8.8", 53),  # Google DNS
+            ("1.1.1.1", 53),  # Cloudflare DNS
+            ("clients3.google.com", 80),  # Google connectivity check
+            ("www.msftconnecttest.com", 80),  # Microsoft connectivity check
         ]
 
         has_timeout = False
@@ -127,7 +143,7 @@ class NetworkService:
         for host, port in targets:
             try:
                 # 1.0s timeout per target to prevent blocking the MCP tool
-                with socket.create_connection((host, port), timeout=1.0) as s:
+                with socket.create_connection((host, port), timeout=1.0):
                     return "success", True
             except socket.timeout:
                 has_timeout = True
@@ -159,7 +175,11 @@ class NetworkService:
                     break
         except Exception as e:
             logger.warning(f"Error reading network interface statistics: {e}")
-            warnings.append(WarningItem(component="network", code="INTERFACE_STATS_FAILED", message=str(e)))
+            warnings.append(
+                WarningItem(
+                    component="network", code="INTERFACE_STATS_FAILED", message=str(e)
+                )
+            )
             status = "partial"
 
         # Check local IPs
@@ -177,7 +197,7 @@ class NetworkService:
                 WarningItem(
                     component="network",
                     code="OUTBOUND_PROBE_FAILED",
-                    message=f"Outbound network check returned status: {reachability_status}"
+                    message=f"Outbound network check returned status: {reachability_status}",
                 )
             )
             # Do not declare a full query error for standard offline state
@@ -190,7 +210,7 @@ class NetworkService:
             timestamp=time.time(),
             duration_ms=round(duration_ms, 2),
             status=status,
-            warnings=warnings
+            warnings=warnings,
         )
 
         return NetworkSummaryModel(
@@ -202,5 +222,5 @@ class NetworkService:
             local_network_available=local_network_available,
             internet_reachability_check=reachability_status,
             internet_connected=connected,
-            collection_metadata=metadata
+            collection_metadata=metadata,
         )

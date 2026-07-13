@@ -2,6 +2,7 @@ from pydantic import BaseModel
 from typing import List, Optional
 from .metadata import CollectionMetadataModel
 
+
 class GPUInfoModel(BaseModel):
     name: str
     vendor: Optional[str] = None
@@ -12,14 +13,16 @@ class GPUInfoModel(BaseModel):
     status: str  # "available", "unavailable", "unsupported", "error"
     source: str  # "nvidia-smi", "registry", "system-api", "command", "other"
     driver_version: Optional[str] = None
-    memory_used: Optional[int] = None   # in MB
-    memory_free: Optional[int] = None   # in MB
+    memory_used: Optional[int] = None  # in MB
+    memory_free: Optional[int] = None  # in MB
+
 
 class OllamaModelInfoModel(BaseModel):
     name: str
     size: int
     family: Optional[str] = None
     format: Optional[str] = None
+
 
 class AIEnvStatusModel(BaseModel):
     gpu: List[GPUInfoModel]

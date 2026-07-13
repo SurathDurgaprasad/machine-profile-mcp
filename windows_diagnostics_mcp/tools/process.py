@@ -2,13 +2,15 @@ from mcp.server.fastmcp import FastMCP
 from ..services.process_service import ProcessService
 from ..models.process import ProcessListModel
 
+
 def register_process_tools(mcp: FastMCP, process_service: ProcessService):
     """
     Registers the running_processes tool on FastMCP.
     """
+
     @mcp.tool(
         name="running_processes",
-        description="Query active running processes, returning overall process details and top CPU and memory consumers."
+        description="Query active running processes, returning overall process details and top CPU and memory consumers.",
     )
     def running_processes(limit: int = 10) -> ProcessListModel:
         """
