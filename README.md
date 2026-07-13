@@ -37,7 +37,7 @@ This project is packaged as a standard Python package exposing the console comma
 
 ### Prerequisites
 * **Operating System**: Windows OS (v1 Windows-only)
-* **Python Runtime**: Python 3.9 - 3.13 (configured for CI validation) and Python 3.14.4 (locally tested)
+* **Python Runtime**: Python 3.10 - 3.13 (configured for CI validation) and Python 3.14.4 (locally tested)
 
 ---
 
@@ -66,7 +66,7 @@ If using `uv` (recommended modern Python runner), the MCP client can run it dire
 ### Option B: Local User Space Isolation via `pipx`
 Installs the server in an isolated virtual environment and exposes the console command `machine-profile` globally.
 
-* **Prerequisites**: Python (3.9+) and [pipx](https://github.com/pypa/pipx) must be installed.
+* **Prerequisites**: Python (3.10+) and [pipx](https://github.com/pypa/pipx) must be installed.
 * **Command**: `pipx install git+https://github.com/SurathDurgaprasad/machine-profile-mcp.git`
 * **Claude Desktop Configuration**:
   ```json
@@ -84,7 +84,7 @@ Installs the server in an isolated virtual environment and exposes the console c
 ### Option C: Build and Install Wheel manually
 For offline systems, build the package distribution wheel and install it in your environment.
 
-* **Prerequisites**: Python (3.9+) and standard Python `build` library (`pip install build`).
+* **Prerequisites**: Python (3.10+) and standard Python `build` library (`pip install build`).
 1. **Build wheel**:
    ```powershell
    python -m build

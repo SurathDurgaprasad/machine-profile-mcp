@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "machine-profile-mcp"
 version = "1.0.0"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 description = "A Windows machine profile and current environment diagnostic tool built with the Python MCP SDK"
 authors = [{ name = "Surath Durgaprasad", email = "noreply@github.com" }]
 readme = "README.md"
@@ -20,7 +20,6 @@ classifiers = [
     "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Developers",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Operating System :: Microsoft :: Windows",
