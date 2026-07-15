@@ -1509,16 +1509,23 @@ def test_lmstudio_detector_privacy_failure_paths():
                 "MACHINE_PROFILE_ANONYMIZE": "true",
             },
         ):
+            target_path_normalized = str(user_dir).replace("\\", "/").lower()
+            intercept_count = 0
             orig_stat = os.stat
 
             def stat_side_effect(path, *args, **kwargs):
-                path_str = str(path)
-                if "pub_some_folder" in path_str or username in path_str:
+                nonlocal intercept_count
+                path_str = str(path).replace("\\", "/").lower()
+                if path_str == target_path_normalized:
+                    intercept_count += 1
                     raise OSError(f"Failed to access C:\\Users\\{username}\\dir")
                 return orig_stat(path, *args, **kwargs)
 
             with patch("os.stat", side_effect=stat_side_effect):
                 inv = detector.detect()
+                assert (
+                    intercept_count > 0
+                ), "Mock did not intercept target user_dir stat call"
                 assert inv.inventory_complete is False
                 assert len(inv.warnings) >= 1
                 # The exception text and warning path must be fully sanitized
@@ -1592,15 +1599,23 @@ def test_lmstudio_detector_reparse_stat_failure_skip():
         with patch.dict(os.environ, {"USERPROFILE": str(tmp_path)}):
             # os.path.islink returns False so stat exception branch is executed
             with patch("os.path.islink", return_value=False):
+                target_path_normalized = str(junction_dir).replace("\\", "/").lower()
+                intercept_count = 0
                 orig_stat = os.stat
 
                 def stat_side_effect(path, *args, **kwargs):
-                    if "junction_dir" in str(path):
+                    nonlocal intercept_count
+                    path_str = str(path).replace("\\", "/").lower()
+                    if path_str == target_path_normalized:
+                        intercept_count += 1
                         raise OSError("Permission Denied")
                     return orig_stat(path, *args, **kwargs)
 
                 with patch("os.stat", side_effect=stat_side_effect):
                     inv = detector.detect()
+                    assert (
+                        intercept_count > 0
+                    ), "Mock did not intercept target junction_dir stat call"
                     assert inv.inventory_complete is False
                     assert len(inv.warnings) >= 1
                     assert "Junction check failed" in inv.warnings[0]
