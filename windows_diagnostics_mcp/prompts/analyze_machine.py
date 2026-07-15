@@ -14,15 +14,16 @@ def register_prompts(mcp: FastMCP):
     def analyze_machine() -> list[PromptMessage]:
         prompt_text = (
             "I want to analyze the system health, developer environment, and AI readiness of my local Windows machine. "
-            "Please call the appropriate diagnostic tools registered on this server to collect the required data, such as:\n"
-            "- system_summary (for OS edition, version, build number, hostname, and uptime)\n"
-            "- machine_health (for CPU/RAM utilization, startup apps, system drive alerts, warnings, and high-resource processes)\n"
-            "- developer_environment or installed_tools (for compiler/runtime versions and installation paths)\n"
-            "- ai_environment (for GPU status, local ML packages like PyTorch/ONNX, Ollama servers, and workspace virtualenvs)\n"
-            "- storage_summary (for local disk capacities and partition usage mapping)\n"
-            "- network_summary (for default gateway routing, DNS configurations, local IPs, and internet checks)\n\n"
-            "Once you have gathered the diagnostic reports, write a comprehensive evaluation. "
-            "Do not fabricate any values. Assess the machine's state, highlight any warnings/concerns, and provide actionable recommendations based on the findings."
+            "Please call the appropriate diagnostic tools registered on this server to collect the required data. "
+            "Follow these guidelines for intelligent tool orchestration:\n"
+            "1. Inspect system and CPU information using the system_summary tool or windows://system resource.\n"
+            "2. Inspect GPU capabilities, local AI runtimes (Ollama, LM Studio), offline model inventories, and Docker status/containers using the ai_environment tool or windows://ai resource.\n"
+            "3. Inspect developer tooling and compiler paths using developer_environment or installed_tools.\n"
+            "4. Inspect machine health (CPU/RAM usage, process list) using machine_health or running_processes only when relevant to performance troubleshooting.\n"
+            "5. Avoid unnecessary tool calls when sufficient information is already collected (e.g., if ai_environment has been queried, do not call system_summary unless OS edition details are specifically requested).\n"
+            "6. Distinguish clearly between: installed AI runtimes (e.g. Ollama CLI detected), active running runtimes (Ollama daemon responding), offline cached models (local files under LM Studio/Ollama), and containerized runtimes (running Docker AI containers).\n"
+            "7. Never claim a model is currently runnable/loaded merely because a model file exists in the offline cache or directory inventory.\n\n"
+            "Once you have gathered the diagnostic reports, write a comprehensive evaluation of the machine's state, highlight any warnings/concerns, and provide actionable recommendations. Do not fabricate any values."
         )
 
         return [

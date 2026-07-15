@@ -131,6 +131,23 @@ async def run_e2e_test():
 
                 # Verify metadata exists on dict outputs
                 if isinstance(data, dict):
+                    # Specific schema assertions for new v1.1 fields
+                    if tool_name == "system_summary":
+                        assert "cpu" in data, "system_summary missing cpu field"
+                        cpu_data = data["cpu"]
+                        if cpu_data is not None:
+                            assert "model" in cpu_data
+                            assert "vendor" in cpu_data
+                            assert "architecture" in cpu_data
+                            assert "status" in cpu_data
+                    elif tool_name == "ai_environment":
+                        assert (
+                            "local_models" in data
+                        ), "ai_environment missing local_models field"
+                        assert "docker" in data, "ai_environment missing docker field"
+                        assert "models" in data["local_models"]
+                        assert "status" in data["docker"]
+
                     if "collection_metadata" in data:
                         metadata = data["collection_metadata"]
                         assert (
@@ -174,6 +191,18 @@ async def run_e2e_test():
                 assert (
                     "traceback" not in text_out.lower()
                 ), f"Resource {resource_uri} contains a traceback"
+
+                # Specific schema assertions for new v1.1 fields on resources
+                if resource_uri == "windows://system":
+                    assert "cpu" in data, "windows://system resource missing cpu field"
+                elif resource_uri == "windows://ai":
+                    assert (
+                        "local_models" in data
+                    ), "windows://ai resource missing local_models field"
+                    assert (
+                        "docker" in data
+                    ), "windows://ai resource missing docker field"
+
                 logger.info(f"Resource {resource_uri} SUCCESS.")
 
             # 7. Get and Validate Prompt Template

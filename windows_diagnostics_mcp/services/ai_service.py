@@ -3,13 +3,22 @@ import os
 import pathlib
 import shutil
 import time
-import winreg
 from typing import List, Tuple
 import httpx
 
-from ..models.ai import AIEnvStatusModel, GPUInfoModel, OllamaModelInfoModel
+from ..models.ai import (
+    AIEnvStatusModel,
+    GPUInfoModel,
+    OllamaModelInfoModel,
+    LocalModelInventoryModel,
+    DockerStatusModel,
+)
 from ..models.metadata import CollectionMetadataModel, WarningItem
-from .subprocess_helper import safe_run_command
+from .detectors.gpu_detector import GPUDetector
+from .detectors.ollama_detector import OllamaDetector
+from .detectors.lmstudio_detector import LMStudioDetector
+from .detectors.docker_detector import DockerDetector
+from .utils import sanitize_user_path
 
 logger = logging.getLogger("windows-diagnostics.services.ai")
 
@@ -38,206 +47,11 @@ class AIService:
     Service for querying GPU information, Ollama models, virtual envs, and ML frameworks.
     """
 
-    def _classify_adapter(self, name: str, vendor: str) -> str:
-        """
-        Conservative classification of Windows display adapters.
-        Prefers returning "unknown" over unsupported inference.
-        """
-        name_lower = name.lower()
-        vendor_lower = vendor.lower()
-
-        # Virtual display adapters
-        if any(
-            term in name_lower
-            for term in [
-                "remote display",
-                "basic display",
-                "virtual",
-                "vmware",
-                "citrix",
-                "vbox",
-                "hyper-v",
-            ]
-        ):
-            return "virtual"
-
-        # Explicitly supported high-confidence Intel integrated graphics patterns
-        if "intel" in name_lower or "intel" in vendor_lower:
-            if any(
-                pat in name_lower
-                for pat in [
-                    "iris",
-                    "uhd graphics",
-                    "hd graphics",
-                    "arc(tm) graphics",
-                    "arc(tm) 140v",
-                ]
-            ):
-                return "integrated"
-            return "unknown"
-
-        # Explicitly supported high-confidence AMD integrated graphics patterns
-        if "amd" in name_lower or "amd" in vendor_lower or "ati " in name_lower:
-            if name_lower in ("amd radeon graphics", "amd radeon(tm) graphics"):
-                return "integrated"
-            return "unknown"
-
-        # Do not infer type for unknown or other vendors (prefer unknown)
-        return "unknown"
-
-    def _get_gpu_info_smi(self) -> List[GPUInfoModel]:
-        """
-        Attempts to query NVIDIA GPUs using nvidia-smi.
-        """
-        gpu_list = []
-        nvidia_smi = shutil.which("nvidia-smi")
-        if not nvidia_smi:
-            for path in [
-                r"C:\Windows\System32\nvidia-smi.exe",
-                r"C:\Program Files\NVIDIA Corporation\NVSMI\nvidia-smi.exe",
-            ]:
-                if os.path.exists(path):
-                    nvidia_smi = path
-                    break
-
-        if not nvidia_smi:
-            return gpu_list
-
-        try:
-            code, stdout, stderr = safe_run_command(
-                [
-                    nvidia_smi,
-                    "--query-gpu=name,driver_version,memory.total,memory.used,memory.free",
-                    "--format=csv,noheader,nounits",
-                ],
-                timeout=2.5,
-            )
-            if code == 0:
-                for line in stdout.strip().split("\n"):
-                    if not line.strip():
-                        continue
-                    parts = [p.strip() for p in line.split(",")]
-                    if len(parts) >= 5:
-                        vram_mb = int(parts[2]) if parts[2].isdigit() else None
-                        used_mb = int(parts[3]) if parts[3].isdigit() else None
-                        free_mb = int(parts[4]) if parts[4].isdigit() else None
-
-                        gpu_list.append(
-                            GPUInfoModel(
-                                name=parts[0],
-                                vendor="NVIDIA",
-                                vram_mb=vram_mb,
-                                adapter_type="discrete",
-                                dedicated_vram_bytes=(
-                                    vram_mb * 1024 * 1024 if vram_mb else None
-                                ),
-                                shared_memory_bytes=None,
-                                status="available",
-                                source="nvidia-smi",
-                                driver_version=parts[1],
-                                memory_used=used_mb,
-                                memory_free=free_mb,
-                            )
-                        )
-        except Exception as e:
-            logger.debug(f"nvidia-smi call failed or timed out: {e}")
-        return gpu_list
-
-    def _get_registry_gpus(self) -> List[GPUInfoModel]:
-        """
-        Queries Windows registry display adapters to support Intel, AMD, and integrated GPUs.
-        """
-        gpu_list = []
-        try:
-            path = r"SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}"
-            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, path) as class_key:
-                info = winreg.QueryInfoKey(class_key)
-                for i in range(info[0]):
-                    subkey_name = winreg.EnumKey(class_key, i)
-                    if not subkey_name.isdigit():
-                        continue
-                    try:
-                        with winreg.OpenKey(class_key, subkey_name) as adapter_key:
-                            try:
-                                driver_desc, _ = winreg.QueryValueEx(
-                                    adapter_key, "DriverDesc"
-                                )
-                            except FileNotFoundError:
-                                continue
-
-                            try:
-                                provider_name, _ = winreg.QueryValueEx(
-                                    adapter_key, "ProviderName"
-                                )
-                            except FileNotFoundError:
-                                provider_name = "Unknown"
-
-                            vram_bytes = None
-                            try:
-                                vram_val, _ = winreg.QueryValueEx(
-                                    adapter_key, "HardwareInformation.MemorySize"
-                                )
-                                if isinstance(vram_val, bytes):
-                                    vram_bytes = int.from_bytes(
-                                        vram_val, byteorder="little"
-                                    )
-                                else:
-                                    vram_bytes = int(vram_val)
-                            except FileNotFoundError:
-                                pass
-
-                            gpu_name = str(driver_desc)
-                            gpu_vendor = str(provider_name)
-                            adapter_type = self._classify_adapter(gpu_name, gpu_vendor)
-
-                            # Do not interpret registry HardwareInformation.MemorySize as dedicated VRAM when adapter type is unknown/integrated/virtual
-                            if adapter_type == "discrete":
-                                dedicated_bytes = vram_bytes
-                                vram_mb = (
-                                    vram_bytes // (1024 * 1024) if vram_bytes else None
-                                )
-                                shared_bytes = None
-                            else:
-                                dedicated_bytes = None
-                                vram_mb = None
-                                shared_bytes = None
-
-                            gpu_list.append(
-                                GPUInfoModel(
-                                    name=gpu_name,
-                                    vendor=gpu_vendor,
-                                    vram_mb=vram_mb,
-                                    adapter_type=adapter_type,
-                                    dedicated_vram_bytes=dedicated_bytes,
-                                    shared_memory_bytes=shared_bytes,
-                                    status="available",
-                                    source="registry",
-                                )
-                            )
-                    except Exception:
-                        continue
-        except Exception as e:
-            logger.debug(f"Registry display adapters query failed: {e}")
-        return gpu_list
-
-    def _get_gpu_info(self) -> List[GPUInfoModel]:
-        """
-        Layered GPU detection: queries nvidia-smi first, falling back/supplementing with the registry.
-        """
-        smi_gpus = self._get_gpu_info_smi()
-        reg_gpus = self._get_registry_gpus()
-
-        if not smi_gpus:
-            return reg_gpus
-
-        # Merge registry GPUs that were not reported by nvidia-smi (e.g. integrated Intel cards)
-        smi_names = {g.name.lower() for g in smi_gpus}
-        for reg_gpu in reg_gpus:
-            # Avoid duplicate matching by partial substring checks
-            if not any(s_name in reg_gpu.name.lower() for s_name in smi_names):
-                smi_gpus.append(reg_gpu)
-
-        return smi_gpus
+    def __init__(self):
+        self._gpu_detector = GPUDetector()
+        self._ollama_detector = OllamaDetector()
+        self._lmstudio_detector = LMStudioDetector()
+        self._docker_detector = DockerDetector()
 
     def _get_ollama_details(self) -> Tuple[bool, bool, List[OllamaModelInfoModel]]:
         """
@@ -319,7 +133,7 @@ class AIService:
 
         # GPU
         try:
-            gpu_info = self._get_gpu_info()
+            gpu_info = self._gpu_detector.detect()
             if not gpu_info:
                 gpu_info = [
                     GPUInfoModel(
@@ -416,6 +230,98 @@ class AIService:
             )
             status = "partial"
 
+        # Local Models Inventory
+        try:
+            ollama_inv = self._ollama_detector.detect()
+            if ollama_inv.warnings:
+                for w in ollama_inv.warnings:
+                    warnings.append(
+                        WarningItem(
+                            component="local_models",
+                            code="OLLAMA_DISCOVERY_WARNING",
+                            message=w,
+                        )
+                    )
+                status = "partial"
+        except Exception as e:
+            ollama_inv = LocalModelInventoryModel(
+                models=[],
+                inventory_complete=False,
+                truncated=False,
+                warnings=[f"Failed to scan Ollama models: {str(e)}"],
+            )
+            warnings.append(
+                WarningItem(
+                    component="local_models",
+                    code="OLLAMA_DISCOVERY_FAILED",
+                    message=f"Ollama models scan failed: {str(e)}",
+                )
+            )
+            status = "partial"
+
+        try:
+            lmstudio_inv = self._lmstudio_detector.detect()
+            if lmstudio_inv.warnings:
+                for w in lmstudio_inv.warnings:
+                    warnings.append(
+                        WarningItem(
+                            component="local_models",
+                            code="LMSTUDIO_DISCOVERY_WARNING",
+                            message=w,
+                        )
+                    )
+                status = "partial"
+        except Exception as e:
+            lmstudio_inv = LocalModelInventoryModel(
+                models=[],
+                inventory_complete=False,
+                truncated=False,
+                warnings=[f"Failed to scan LM Studio models: {str(e)}"],
+            )
+            warnings.append(
+                WarningItem(
+                    component="local_models",
+                    code="LMSTUDIO_DISCOVERY_FAILED",
+                    message=f"LM Studio scan failed: {str(e)}",
+                )
+            )
+            status = "partial"
+
+        local_models = LocalModelInventoryModel(
+            models=ollama_inv.models + lmstudio_inv.models,
+            inventory_complete=ollama_inv.inventory_complete
+            and lmstudio_inv.inventory_complete,
+            truncated=ollama_inv.truncated or lmstudio_inv.truncated,
+            warnings=ollama_inv.warnings + lmstudio_inv.warnings,
+        )
+
+        try:
+            docker_status = self._docker_detector.detect()
+        except Exception as e:
+            docker_status = DockerStatusModel(
+                status="unknown", version=None, ai_containers=[]
+            )
+            warnings.append(
+                WarningItem(
+                    component="docker",
+                    code="DOCKER_DISCOVERY_FAILED",
+                    message=f"Docker discovery failed: {str(e)}",
+                )
+            )
+            status = "partial"
+
+        # Centralized path/warning sanitization at the data boundary
+        virtual_envs = [sanitize_user_path(v) for v in virtual_envs]
+
+        for m in local_models.models:
+            if m.path:
+                m.path = sanitize_user_path(m.path)
+        local_models.warnings = [sanitize_user_path(w) for w in local_models.warnings]
+
+        for w in warnings:
+            if w.message:
+                w.message = sanitize_user_path(w.message)
+
         duration_ms = (time.perf_counter() - start_time) * 1000.0
 
         metadata = CollectionMetadataModel(
@@ -438,4 +344,6 @@ class AIService:
             onnxruntime_gpu_available=onnxruntime_gpu,
             python_virtual_environments=virtual_envs,
             collection_metadata=metadata,
+            local_models=local_models,
+            docker=docker_status,
         )

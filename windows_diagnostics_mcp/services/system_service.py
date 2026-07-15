@@ -16,6 +16,7 @@ except ImportError:
 
 from ..models.system import SystemSummaryModel
 from ..models.metadata import CollectionMetadataModel, WarningItem
+from .detectors.cpu_detector import CPUDetector
 
 logger = logging.getLogger("machine-profile.services.system")
 
@@ -24,6 +25,9 @@ class SystemService:
     """
     Service for querying high-level Windows system metadata and uptime.
     """
+
+    def __init__(self):
+        self._cpu_detector = CPUDetector()
 
     def _get_windows_details(self) -> Tuple[str, str, str]:
         """
@@ -149,6 +153,32 @@ class SystemService:
             status = "partial"
             logger.warning(f"Failed to calculate system uptime: {e}")
 
+        # Profile CPU details
+        try:
+            cpu_info = self._cpu_detector.detect()
+            if cpu_info.status == "partial":
+                status = "partial"
+                warnings.append(
+                    WarningItem(
+                        component="cpu",
+                        code="CPU_PROFILE_PARTIAL",
+                        message="Some CPU attributes could not be resolved.",
+                    )
+                )
+            elif cpu_info.status == "error":
+                status = "partial"
+                warnings.append(
+                    WarningItem(
+                        component="cpu",
+                        code="CPU_PROFILE_FAILED",
+                        message="Failed to profile CPU characteristics.",
+                    )
+                )
+        except Exception as e:
+            cpu_info = None
+            status = "partial"
+            logger.warning(f"Failed to execute CPUDetector: {e}")
+
         duration_ms = (time.perf_counter() - start_time) * 1000.0
 
         metadata = CollectionMetadataModel(
@@ -184,4 +214,5 @@ class SystemService:
             uptime_seconds=uptime_seconds,
             uptime_formatted=uptime_formatted,
             collection_metadata=metadata,
+            cpu=cpu_info,
         )

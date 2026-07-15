@@ -14,13 +14,17 @@ Instead of exposing raw event logs, administrative service editors, or destructi
 
 ## What It Does & Does Not Do
 
-### What It Does:
-* **System Profile**: Reports Windows Edition, version, build number, and boot uptime.
+### What It Does (v1.1.0 Capabilities):
+* **System & CPU Profile**: Reports Windows Edition, version, build number, boot uptime, and CPU hardware details (model, vendor, cores, logical processors, and frequency).
 * **Machine Health**: Computes a heuristic 0-100 score indicating resource bottlenecks.
 * **Running Processes**: Lists processes consuming the highest CPU or Memory.
 * **Storage Summary**: Maps capacity, file system, and free space of mounted partitions.
-* **Developer Environment**: Locates installation paths and versions of `python`, `git`, `node`, `docker`, `java`, and `vscode`.
-* **AI Environment**: Queries GPU hardware adapters, local Ollama models, PyTorch, and local virtualenvs.
+* **Developer Environment**: Locates installation paths and versions of common runtimes (`python`, `git`, `node`, `docker`, `java`, `vscode`).
+* **AI Environment & GPU Profile**: Queries GPU adapters (integrated/discrete), local package installations (`torch`, `onnxruntime`), and local Python virtualenvs.
+* **GPU Deduplication**: Implements active/stale registry display adapter filtering and PnP-based hardware identity mapping to prevent stale/duplicate entries (e.g. Remote Display Adapters).
+* **Offline Model Discovery**: Scans local directory tags and manifests for offline Ollama models (works even when the daemon is stopped) and LM Studio GGUF models (with depth/file bounds, quantization inference, and junction/symlink protection).
+* **Docker Status & AI Containers**: Reports Docker CLI version and daemon connection status, alongside running AI-related container details (e.g., `ollama`, `vllm`, `localai`) via a strict image repository allowlist.
+* **Privacy & Path Anonymization**: Supports path redaction when `MACHINE_PROFILE_ANONYMIZE=true` is enabled, sanitizing active-user profile folders (e.g., `C:\Users\LocalUser`) while leaving general usernames intact.
 * **Network Topology**: Gathers DNS servers, gateway IPs, local addresses, and checks internet reachability.
 * **Installed Developer Tools**: Exposes a summary checklist of local runtime availability.
 
@@ -91,7 +95,7 @@ For offline systems, build the package distribution wheel and install it in your
    ```
 2. **Install wheel in environment**:
    ```powershell
-   pip install dist/machine_profile_mcp-1.0.0-py3-none-any.whl
+   pip install dist/machine_profile_mcp-1.1.0-py3-none-any.whl
    ```
 3. **Claude Desktop Configuration**:
    ```json
@@ -144,10 +148,14 @@ Exposes read-only snapshots of the host system's current state with MIME type `a
 
 ## Tested Environment & Evidence-Based Compatibility
 
-* **Windows 11 Pro (25H2, Build 26200)**: **Verified on real environment** (Tested on active host).
+* **Windows 11 Pro (25H2, Build 26200) with Intel CPU**: **Verified on real environment** (Tested on active host).
 * **Intel Arc(TM) 140V GPU**: **Verified on real hardware** (Successfully parsed on host registry).
 * **Non-Admin User space**: **Verified on real environment** (Tested UAC-free).
-* **Windows 10 / Windows Server / AMD GPUs**: *Not Yet Tested* (Verified by unit test mock layers only).
+* **GPU Duplicate Adapter Fix**: **Validated via unit tests and local simulation**; physical revalidation on affected peer machine is **pending**.
+* **Windows 10 physical validation**: **Pending** (Verified by unit test mock layers only).
+* **AMD hardware validation**: **Pending** (Verified by unit test mock layers only).
+* **Real LM Studio installation validation**: **Pending** (Verified by unit test mock layers only).
+* **Active Docker AI-container validation**: **Pending** (Verified by unit test mock layers only).
 
 ---
 

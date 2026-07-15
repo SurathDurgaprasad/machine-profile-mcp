@@ -9,6 +9,7 @@ from typing import List
 from ..models.developer import DevEnvStatusModel, ToolInfoModel
 from ..models.metadata import CollectionMetadataModel, WarningItem
 from .subprocess_helper import safe_run_command
+from .utils import sanitize_user_path
 
 logger = logging.getLogger("windows-diagnostics.services.developer")
 
@@ -191,6 +192,24 @@ class DeveloperService:
                     )
                 )
                 status = "partial"
+
+        # Centralized path/warning sanitization at the data boundary
+        for tool_info in [
+            python_info,
+            git_info,
+            node_info,
+            docker_info,
+            java_info,
+            vscode_info,
+        ]:
+            if tool_info.path:
+                tool_info.path = sanitize_user_path(tool_info.path)
+            if tool_info.error_message:
+                tool_info.error_message = sanitize_user_path(tool_info.error_message)
+
+        for w in warnings:
+            if w.message:
+                w.message = sanitize_user_path(w.message)
 
         duration_ms = (time.perf_counter() - start_time) * 1000.0
 
