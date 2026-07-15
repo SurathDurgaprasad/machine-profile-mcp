@@ -1509,10 +1509,15 @@ def test_lmstudio_detector_privacy_failure_paths():
                 "MACHINE_PROFILE_ANONYMIZE": "true",
             },
         ):
-            with patch(
-                "os.stat",
-                side_effect=OSError(f"Failed to access C:\\Users\\{username}\\dir"),
-            ):
+            orig_stat = os.stat
+
+            def stat_side_effect(path, *args, **kwargs):
+                path_str = str(path)
+                if "pub_some_folder" in path_str or username in path_str:
+                    raise OSError(f"Failed to access C:\\Users\\{username}\\dir")
+                return orig_stat(path, *args, **kwargs)
+
+            with patch("os.stat", side_effect=stat_side_effect):
                 inv = detector.detect()
                 assert inv.inventory_complete is False
                 assert len(inv.warnings) >= 1
@@ -1587,7 +1592,14 @@ def test_lmstudio_detector_reparse_stat_failure_skip():
         with patch.dict(os.environ, {"USERPROFILE": str(tmp_path)}):
             # os.path.islink returns False so stat exception branch is executed
             with patch("os.path.islink", return_value=False):
-                with patch("os.stat", side_effect=OSError("Permission Denied")):
+                orig_stat = os.stat
+
+                def stat_side_effect(path, *args, **kwargs):
+                    if "junction_dir" in str(path):
+                        raise OSError("Permission Denied")
+                    return orig_stat(path, *args, **kwargs)
+
+                with patch("os.stat", side_effect=stat_side_effect):
                     inv = detector.detect()
                     assert inv.inventory_complete is False
                     assert len(inv.warnings) >= 1
