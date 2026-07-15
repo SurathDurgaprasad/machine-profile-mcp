@@ -168,9 +168,12 @@ The `assess_workload_fit` tool deterministically estimates whether a local machi
   * Registry-based total GPU capacity and active display status.
   * Passive files existence for runtime libraries (`nvcuda.dll`, `d3d12.dll`, `directml.dll`).
 * **Estimated Footprint**:
-  * Raw model weights: $\lceil \text{parameters} \times 10^9 \times \frac{\text{bits}}{8} \rceil$
-  * Runtime overhead: $\lceil \max(1\text{ GiB}, \text{raw\_weight} \times 0.20) \rceil$
-  * Safety margin buffer: $\lceil \text{required} \times \frac{\text{safety}\%}{100} \rceil$
+  * **Raw model weights**:
+    `ceil(parameters × 10^9 × bits / 8)`
+  * **Runtime overhead**:
+    `ceil(max(1 GiB, raw_weight × 0.20))`
+  * **Safety margin buffer**:
+    `ceil(required × safety_margin_percent / 100)`
 * **Derived Classifications**:
   * `fits`: Required memory with safety margin fits inside current free space.
   * `marginal`: Required memory fits, but exceeds the safety margin buffer limit.
