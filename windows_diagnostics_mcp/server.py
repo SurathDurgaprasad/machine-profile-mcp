@@ -17,6 +17,7 @@ from windows_diagnostics_mcp.services.developer_service import DeveloperService
 from windows_diagnostics_mcp.services.ai_service import AIService
 from windows_diagnostics_mcp.services.network_service import NetworkService
 from windows_diagnostics_mcp.services.health_service import HealthService
+from windows_diagnostics_mcp.services.workload_service import WorkloadService
 
 # Import Tool Registrars
 from windows_diagnostics_mcp.tools.system import register_system_tools
@@ -26,6 +27,7 @@ from windows_diagnostics_mcp.tools.ai import register_ai_tools
 from windows_diagnostics_mcp.tools.storage import register_storage_tools
 from windows_diagnostics_mcp.tools.process import register_process_tools
 from windows_diagnostics_mcp.tools.network import register_network_tools
+from windows_diagnostics_mcp.tools.workload import register_workload_tools
 
 # Import Resource Registrars
 from windows_diagnostics_mcp.resources.system import register_system_resources
@@ -58,6 +60,7 @@ developer_service = DeveloperService()
 ai_service = AIService()
 network_service = NetworkService()
 health_service = HealthService(process_service, storage_service)
+workload_service = WorkloadService()
 
 # Register MCP Tools
 register_system_tools(mcp, system_service)
@@ -67,6 +70,7 @@ register_ai_tools(mcp, ai_service)
 register_storage_tools(mcp, storage_service)
 register_process_tools(mcp, process_service)
 register_network_tools(mcp, network_service)
+register_workload_tools(mcp, workload_service)
 
 # Register MCP Resources
 register_system_resources(mcp, system_service)

@@ -9,7 +9,7 @@ except ImportError:
     OpenKey = None
     QueryValueEx = None
 
-from ...models.system import CPUInfoModel
+from ...models.system import CPUInfoModel, CapabilityStatusModel
 
 logger = logging.getLogger("machine-profile.detectors.cpu")
 
@@ -18,6 +18,85 @@ class CPUDetector:
     """
     Detector for Windows host CPU characteristics.
     """
+
+    def _detect_capabilities(self, architecture: str) -> tuple:
+        arch_lower = architecture.lower()
+        is_x86_x64 = any(
+            x in arch_lower for x in ["amd64", "x86", "intel", "i386", "i686"]
+        )
+
+        if not is_x86_x64:
+            not_app = CapabilityStatusModel(
+                supported=None,
+                status="unknown",
+                source="none",
+                detail="AVX features are not queried on non-x86/x64 architectures.",
+            )
+            return not_app, not_app, not_app
+
+        if platform.system().lower() != "windows":
+            unknown_status = CapabilityStatusModel(
+                supported=None,
+                status="unknown",
+                source="none",
+                detail="Feature detection only supported on Windows platforms.",
+            )
+            return unknown_status, unknown_status, unknown_status
+
+        # Windows x86/x64: Use IsProcessorFeaturePresent
+        try:
+            import ctypes
+
+            if (
+                hasattr(ctypes, "windll")
+                and hasattr(ctypes.windll, "kernel32")
+                and hasattr(ctypes.windll.kernel32, "IsProcessorFeaturePresent")
+            ):
+                is_present = ctypes.windll.kernel32.IsProcessorFeaturePresent
+                # Query constants (checks OS-visible capability from IsProcessorFeaturePresent, not direct CPUID):
+                # PF_AVX_INSTRUCTIONS_AVAILABLE = 39
+                # PF_AVX2_INSTRUCTIONS_AVAILABLE = 40
+                # PF_AVX512F_INSTRUCTIONS_AVAILABLE = 41 (AVX-512 Foundation)
+                avx = is_present(39) != 0
+                avx2 = is_present(40) != 0
+                avx512f = is_present(41) != 0
+
+                return (
+                    CapabilityStatusModel(
+                        supported=avx,
+                        status="available" if avx else "unavailable",
+                        source="ctypes-probe",
+                        detail="OS-visible AVX instruction support reported by Windows API.",
+                    ),
+                    CapabilityStatusModel(
+                        supported=avx2,
+                        status="available" if avx2 else "unavailable",
+                        source="ctypes-probe",
+                        detail="OS-visible AVX2 instruction support reported by Windows API.",
+                    ),
+                    CapabilityStatusModel(
+                        supported=avx512f,
+                        status="available" if avx512f else "unavailable",
+                        source="ctypes-probe",
+                        detail="OS-visible AVX512F instruction support reported by Windows API.",
+                    ),
+                )
+            else:
+                unknown_status = CapabilityStatusModel(
+                    supported=None,
+                    status="unknown",
+                    source="none",
+                    detail="Win32 IsProcessorFeaturePresent API is unavailable.",
+                )
+                return unknown_status, unknown_status, unknown_status
+        except Exception:
+            err_status = CapabilityStatusModel(
+                supported=None,
+                status="error",
+                source="none",
+                detail="Failed to query processor feature present.",
+            )
+            return err_status, err_status, err_status
 
     def detect(self) -> CPUInfoModel:
         model = "Unknown"
@@ -101,6 +180,8 @@ class CPUDetector:
         if model == "Unknown CPU" and vendor == "Unknown" and physical_cores is None:
             status = "error"
 
+        avx, avx2, avx512f = self._detect_capabilities(architecture)
+
         return CPUInfoModel(
             model=model,
             vendor=vendor,
@@ -108,5 +189,8 @@ class CPUDetector:
             physical_cores=physical_cores,
             logical_processors=logical_processors,
             max_frequency_mhz=max_freq,
+            avx_support=avx,
+            avx2_support=avx2,
+            avx512f_support=avx512f,
             status=status,
         )

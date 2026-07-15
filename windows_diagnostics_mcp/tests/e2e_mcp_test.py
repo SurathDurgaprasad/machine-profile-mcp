@@ -61,6 +61,7 @@ async def run_e2e_test():
                 "storage_summary",
                 "running_processes",
                 "network_summary",
+                "assess_workload_fit",
             }
             assert expected_tools.issubset(
                 tool_names
@@ -93,11 +94,15 @@ async def run_e2e_test():
                 "analyze_machine" in prompt_names
             ), "Missing expected prompt 'analyze_machine'"
 
-            # 5. Invoke and Validate all 8 Tools individually
-            logger.info("--- Invoking and validating all 8 tools individually ---")
+            # 5. Invoke and Validate all Tools individually
+            logger.info("--- Invoking and validating all tools individually ---")
             for tool_name in expected_tools:
                 logger.info(f"Calling tool: {tool_name}...")
-                args = {"limit": 5} if tool_name == "running_processes" else {}
+                args = {}
+                if tool_name == "running_processes":
+                    args = {"limit": 5}
+                elif tool_name == "assess_workload_fit":
+                    args = {"parameter_count_billions": 7.0, "quantization": "fp16"}
                 tool_call = await session.call_tool(tool_name, arguments=args)
 
                 # Check for successful call and content
@@ -147,6 +152,23 @@ async def run_e2e_test():
                         assert "docker" in data, "ai_environment missing docker field"
                         assert "models" in data["local_models"]
                         assert "status" in data["docker"]
+                        assert (
+                            "accelerator_evidence" in data
+                        ), "ai_environment missing accelerator_evidence field"
+                        assert (
+                            "cuda_driver_library_present"
+                            in data["accelerator_evidence"]
+                        )
+                    elif tool_name == "assess_workload_fit":
+                        assert (
+                            "estimate" in data
+                        ), "assess_workload_fit missing estimate field"
+                        assert (
+                            "overall_fit_status" in data
+                        ), "assess_workload_fit missing overall_fit_status field"
+                        assert (
+                            "selection_reason" in data
+                        ), "assess_workload_fit missing selection_reason field"
 
                     if "collection_metadata" in data:
                         metadata = data["collection_metadata"]

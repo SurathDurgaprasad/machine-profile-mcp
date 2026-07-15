@@ -1,6 +1,7 @@
 from pydantic import BaseModel, Field
 from typing import List, Optional, Literal
 from .metadata import CollectionMetadataModel
+from .system import CapabilityStatusModel
 
 
 class GPUInfoModel(BaseModel):
@@ -89,6 +90,27 @@ class LocalModelInventoryModel(BaseModel):
     )
 
 
+class AcceleratorRuntimeEvidenceModel(BaseModel):
+    cuda_driver_library_present: CapabilityStatusModel = Field(
+        default_factory=lambda: CapabilityStatusModel(
+            supported=None, status="unknown", source="none", detail=None
+        ),
+        description="Passive check of CUDA Driver API library presence (nvcuda.dll)",
+    )
+    d3d12_runtime_library_present: CapabilityStatusModel = Field(
+        default_factory=lambda: CapabilityStatusModel(
+            supported=None, status="unknown", source="none", detail=None
+        ),
+        description="Passive check of D3D12 runtime library presence (d3d12.dll)",
+    )
+    system_directml_library_present: CapabilityStatusModel = Field(
+        default_factory=lambda: CapabilityStatusModel(
+            supported=None, status="unknown", source="none", detail=None
+        ),
+        description="Passive check of system-provided DirectML library presence (directml.dll)",
+    )
+
+
 class AIEnvStatusModel(BaseModel):
     gpu: List[GPUInfoModel]
     ollama_installed: bool
@@ -108,4 +130,8 @@ class AIEnvStatusModel(BaseModel):
     )
     docker: Optional[DockerStatusModel] = Field(
         default=None, description="Docker daemon and containerized AI status"
+    )
+    accelerator_evidence: AcceleratorRuntimeEvidenceModel = Field(
+        default_factory=AcceleratorRuntimeEvidenceModel,
+        description="Environment-level passive accelerator runtime evidence",
     )

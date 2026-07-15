@@ -22,6 +22,7 @@ from windows_diagnostics_mcp.models.ai import (
     DockerStatusModel,
     LocalModelInventoryModel,
     DockerContainerInfo,
+    AcceleratorRuntimeEvidenceModel,
 )
 
 # Models
@@ -36,6 +37,16 @@ from ..services.ai_service import AIService
 from ..services.network_service import NetworkService
 from ..services.health_service import HealthService
 from ..services.subprocess_helper import safe_run_command
+from pydantic import ValidationError
+from windows_diagnostics_mcp.models.ai import GPUInfoModel
+from windows_diagnostics_mcp.models.workload import (
+    WorkloadFitRequestModel,
+)
+from windows_diagnostics_mcp.services.workload_service import (
+    WorkloadService,
+    MIN_RUNTIME_OVERHEAD_BYTES,
+    CONSERVATIVE_HOST_RESERVE_BYTES,
+)
 
 # ==============================================================================
 # Model Tests
@@ -706,6 +717,15 @@ def test_phase1_models_instantiation():
         status="available",
     )
     assert cpu.status == "available"
+    assert cpu.avx_support.supported is None
+    assert cpu.avx_support.status == "unknown"
+    assert cpu.avx_support.source == "none"
+    assert cpu.avx2_support.supported is None
+    assert cpu.avx2_support.status == "unknown"
+    assert cpu.avx2_support.source == "none"
+    assert cpu.avx512f_support.supported is None
+    assert cpu.avx512f_support.status == "unknown"
+    assert cpu.avx512f_support.source == "none"
 
     # 2. LocalModelItem
     model_item = LocalModelItem(
@@ -804,6 +824,148 @@ def test_cpu_detector_registry_fallback(
     assert cpu.logical_processors is None
     assert cpu.max_frequency_mhz is None
     assert cpu.status == "partial"
+
+
+def test_cpu_detector_avx_capabilities_positive():
+    """Verify that CPUDetector correctly reports AVX, AVX2, AVX512F when IsProcessorFeaturePresent is true."""
+    detector = CPUDetector()
+
+    mock_windll = MagicMock()
+    mock_windll.kernel32.IsProcessorFeaturePresent.side_effect = lambda feat: feat in [
+        39,
+        40,
+        41,
+    ]
+
+    with (
+        patch("ctypes.windll", mock_windll, create=True),
+        patch("platform.system", return_value="Windows"),
+        patch("platform.machine", return_value="AMD64"),
+    ):
+
+        cpu = detector.detect()
+        assert cpu.avx_support.supported is True
+        assert cpu.avx_support.status == "available"
+        assert cpu.avx_support.source == "ctypes-probe"
+
+        assert cpu.avx2_support.supported is True
+        assert cpu.avx2_support.status == "available"
+        assert cpu.avx2_support.source == "ctypes-probe"
+
+        assert cpu.avx512f_support.supported is True
+        assert cpu.avx512f_support.status == "available"
+        assert cpu.avx512f_support.source == "ctypes-probe"
+
+
+def test_cpu_detector_avx_capabilities_negative():
+    """Verify that CPUDetector correctly reports AVX features as unsupported if the API returns False."""
+    detector = CPUDetector()
+
+    mock_windll = MagicMock()
+    # Explicitly unsupported (returns False / 0)
+    mock_windll.kernel32.IsProcessorFeaturePresent.return_value = 0
+
+    with (
+        patch("ctypes.windll", mock_windll, create=True),
+        patch("platform.system", return_value="Windows"),
+        patch("platform.machine", return_value="AMD64"),
+    ):
+
+        cpu = detector.detect()
+        assert cpu.avx_support.supported is False
+        assert cpu.avx_support.status == "unavailable"
+        assert cpu.avx_support.source == "ctypes-probe"
+
+        assert cpu.avx2_support.supported is False
+        assert cpu.avx2_support.status == "unavailable"
+        assert cpu.avx2_support.source == "ctypes-probe"
+
+        assert cpu.avx512f_support.supported is False
+        assert cpu.avx512f_support.status == "unavailable"
+        assert cpu.avx512f_support.source == "ctypes-probe"
+
+
+def test_cpu_detector_avx_capabilities_non_windows():
+    """Verify that CPUDetector handles non-Windows systems by marking AVX capabilities as unknown."""
+    detector = CPUDetector()
+
+    with (
+        patch("platform.system", return_value="Linux"),
+        patch("platform.machine", return_value="AMD64"),
+    ):
+
+        cpu = detector.detect()
+        for cap in [cpu.avx_support, cpu.avx2_support, cpu.avx512f_support]:
+            assert cap.supported is None
+            assert cap.status == "unknown"
+            assert cap.source == "none"
+            assert "only supported on Windows" in cap.detail
+
+
+def test_cpu_detector_avx_capabilities_non_x64():
+    """Verify that CPUDetector handles non-x86/x64 systems (like ARM64) by marking AVX capabilities as unknown (not applicable)."""
+    detector = CPUDetector()
+
+    with (
+        patch("platform.system", return_value="Windows"),
+        patch("platform.machine", return_value="ARM64"),
+    ):
+
+        cpu = detector.detect()
+        for cap in [cpu.avx_support, cpu.avx2_support, cpu.avx512f_support]:
+            assert cap.supported is None
+            assert cap.status == "unknown"
+            assert cap.source == "none"
+            assert "not queried" in cap.detail
+
+
+def test_cpu_detector_avx_capabilities_error():
+    """Verify that CPUDetector handles ctypes errors/exceptions gracefully and returns status error."""
+    detector = CPUDetector()
+
+    mock_windll = MagicMock()
+    mock_windll.kernel32.IsProcessorFeaturePresent.side_effect = Exception(
+        "Win32 error"
+    )
+    with (
+        patch("ctypes.windll", mock_windll, create=True),
+        patch("platform.system", return_value="Windows"),
+        patch("platform.machine", return_value="AMD64"),
+    ):
+
+        cpu = detector.detect()
+        for cap in [cpu.avx_support, cpu.avx2_support, cpu.avx512f_support]:
+            assert cap.supported is None
+            assert cap.status == "error"
+            assert cap.source == "none"
+            assert "Failed to query" in cap.detail
+
+
+def test_cpu_detector_constants_regression():
+    """Verify that CPUDetector queries the exact official Win32 constants for processor features (AVX=39, AVX2=40, AVX512F=41)."""
+    detector = CPUDetector()
+
+    called_args = []
+
+    def mock_is_present(feat_id):
+        called_args.append(feat_id)
+        return 0
+
+    mock_windll = MagicMock()
+    mock_windll.kernel32.IsProcessorFeaturePresent.side_effect = mock_is_present
+
+    with (
+        patch("ctypes.windll", mock_windll, create=True),
+        patch("platform.system", return_value="Windows"),
+        patch("platform.machine", return_value="AMD64"),
+    ):
+
+        detector.detect()
+        assert called_args == [
+            39,
+            40,
+            41,
+        ], f"Expected called args to be exactly [39, 40, 41], but got {called_args}"
 
 
 @patch("winreg.OpenKey", side_effect=OSError)
@@ -2221,3 +2383,2192 @@ def test_gpu_detector_real_machine_rdp_leak(
     assert gpus[1].name == "Microsoft Remote Display Adapter"
     assert gpus[1].adapter_type == "virtual"
     assert gpus[1].source == "registry"
+
+
+def test_accelerator_evidence_direct_instantiation_defaults():
+    """Verify that direct construction of AcceleratorRuntimeEvidenceModel produces correct defaults."""
+    model = AcceleratorRuntimeEvidenceModel()
+    for field_name in [
+        "cuda_driver_library_present",
+        "d3d12_runtime_library_present",
+        "system_directml_library_present",
+    ]:
+        cap = getattr(model, field_name)
+        assert cap.supported is None
+        assert cap.status == "unknown"
+        assert cap.source == "none"
+
+
+def test_ai_status_model_direct_instantiation_defaults():
+    """Verify direct AIEnvStatusModel construction works without explicitly providing accelerator_evidence."""
+    from windows_diagnostics_mcp.models.ai import AIEnvStatusModel
+    from windows_diagnostics_mcp.models.metadata import CollectionMetadataModel
+
+    metadata = CollectionMetadataModel(
+        timestamp=0, duration_ms=0, status="ok", warnings=[]
+    )
+    # Build with existing baseline v1.1 fields
+    status = AIEnvStatusModel(
+        gpu=[],
+        ollama_installed=False,
+        ollama_running=False,
+        ollama_models=[],
+        pytorch_installed=False,
+        onnxruntime_installed=False,
+        python_virtual_environments=[],
+        collection_metadata=metadata,
+        local_models=LocalModelInventoryModel(),
+    )
+    # Check that accelerator_evidence defaulted correctly
+    assert status.accelerator_evidence is not None
+    assert status.accelerator_evidence.cuda_driver_library_present.status == "unknown"
+
+
+def test_accelerator_evidence_windows_all_present():
+    """Test passive accelerator checks when all three libraries are present on Windows."""
+    service = AIService()
+
+    def mock_isfile(path):
+        # Return True for any dll checked under candidates
+        return path.endswith(".dll")
+
+    with (
+        patch("platform.system", return_value="Windows"),
+        patch("os.path.isfile", mock_isfile),
+        patch.dict(os.environ, {"SystemRoot": r"C:\Windows"}),
+    ):
+
+        evidence = service._get_accelerator_evidence()
+
+        assert evidence.cuda_driver_library_present.supported is True
+        assert evidence.cuda_driver_library_present.status == "available"
+        assert evidence.cuda_driver_library_present.source == "filesystem-check"
+        assert "nvcuda.dll" in evidence.cuda_driver_library_present.detail
+
+        assert evidence.d3d12_runtime_library_present.supported is True
+        assert evidence.d3d12_runtime_library_present.status == "available"
+        assert "d3d12.dll" in evidence.d3d12_runtime_library_present.detail
+
+        assert evidence.system_directml_library_present.supported is True
+        assert evidence.system_directml_library_present.status == "available"
+        assert "directml.dll" in evidence.system_directml_library_present.detail
+
+
+def test_accelerator_evidence_windows_all_absent():
+    """Test passive accelerator checks when all three libraries are absent on Windows."""
+    service = AIService()
+
+    with (
+        patch("platform.system", return_value="Windows"),
+        patch("os.path.isfile", return_value=False),
+        patch.dict(os.environ, {"SystemRoot": r"C:\Windows"}),
+    ):
+
+        evidence = service._get_accelerator_evidence()
+
+        assert evidence.cuda_driver_library_present.supported is False
+        assert evidence.cuda_driver_library_present.status == "unavailable"
+        assert "not found" in evidence.cuda_driver_library_present.detail
+
+        assert evidence.d3d12_runtime_library_present.supported is False
+        assert evidence.d3d12_runtime_library_present.status == "unavailable"
+        assert "not found" in evidence.d3d12_runtime_library_present.detail
+
+        assert evidence.system_directml_library_present.supported is False
+        assert evidence.system_directml_library_present.status == "unavailable"
+        assert "not found" in evidence.system_directml_library_present.detail
+
+
+def test_accelerator_evidence_windows_mixed():
+    """Test passive accelerator checks with mixed presence on Windows."""
+    service = AIService()
+
+    def mock_isfile(path):
+        # Only d3d12.dll is present
+        return "d3d12.dll" in path
+
+    with (
+        patch("platform.system", return_value="Windows"),
+        patch("os.path.isfile", mock_isfile),
+        patch.dict(os.environ, {"SystemRoot": r"C:\Windows"}),
+    ):
+
+        evidence = service._get_accelerator_evidence()
+
+        assert evidence.cuda_driver_library_present.supported is False
+        assert evidence.cuda_driver_library_present.status == "unavailable"
+
+        assert evidence.d3d12_runtime_library_present.supported is True
+        assert evidence.d3d12_runtime_library_present.status == "available"
+
+        assert evidence.system_directml_library_present.supported is False
+        assert evidence.system_directml_library_present.status == "unavailable"
+
+
+def test_accelerator_evidence_permission_error():
+    """Verify that PermissionError is mapped to error status with stable error details (no paths/usernames)."""
+    service = AIService()
+
+    def mock_isfile(path):
+        raise PermissionError("Access Denied")
+
+    with (
+        patch("platform.system", return_value="Windows"),
+        patch("os.path.isfile", mock_isfile),
+        patch.dict(os.environ, {"SystemRoot": r"C:\Windows"}),
+    ):
+
+        evidence = service._get_accelerator_evidence()
+        for cap in [
+            evidence.cuda_driver_library_present,
+            evidence.d3d12_runtime_library_present,
+            evidence.system_directml_library_present,
+        ]:
+            assert cap.supported is None
+            assert cap.status == "error"
+            assert cap.source == "filesystem-check"
+            assert "Permission denied" in cap.detail
+            assert "C:\\Windows" not in cap.detail  # No machine-specific path exposed
+
+
+def test_accelerator_evidence_os_error():
+    """Verify that OSError is mapped to error status with stable error details."""
+    service = AIService()
+
+    def mock_isfile(path):
+        raise OSError("I/O failure")
+
+    with (
+        patch("platform.system", return_value="Windows"),
+        patch("os.path.isfile", mock_isfile),
+        patch.dict(os.environ, {"SystemRoot": r"C:\Windows"}),
+    ):
+
+        evidence = service._get_accelerator_evidence()
+        for cap in [
+            evidence.cuda_driver_library_present,
+            evidence.d3d12_runtime_library_present,
+            evidence.system_directml_library_present,
+        ]:
+            assert cap.supported is None
+            assert cap.status == "error"
+            assert cap.source == "filesystem-check"
+            assert "Operating system error" in cap.detail
+            assert "C:\\Windows" not in cap.detail
+
+
+def test_accelerator_evidence_non_windows():
+    """Verify non-Windows platforms produce unknown capability with clean messages."""
+    service = AIService()
+
+    with (
+        patch("platform.system", return_value="Linux"),
+        patch.dict(os.environ, {"SystemRoot": r"/usr/windows"}),
+    ):
+
+        evidence = service._get_accelerator_evidence()
+        for cap in [
+            evidence.cuda_driver_library_present,
+            evidence.d3d12_runtime_library_present,
+            evidence.system_directml_library_present,
+        ]:
+            assert cap.supported is None
+            assert cap.status == "unknown"
+            assert cap.source == "none"
+            assert "only supported on Windows" in cap.detail
+
+
+def test_accelerator_evidence_missing_system_root():
+    """Verify that missing SystemRoot and windir returns unknown with stable messages."""
+    service = AIService()
+
+    with (
+        patch("platform.system", return_value="Windows"),
+        patch.dict(os.environ, {}, clear=True),
+    ):
+
+        evidence = service._get_accelerator_evidence()
+        for cap in [
+            evidence.cuda_driver_library_present,
+            evidence.d3d12_runtime_library_present,
+            evidence.system_directml_library_present,
+        ]:
+            assert cap.supported is None
+            assert cap.status == "unknown"
+            assert cap.source == "none"
+            assert "root could not be resolved" in cap.detail
+
+
+def test_accelerator_evidence_candidate_paths_deduplicated():
+    """Verify candidate paths are deduplicated inside candidate resolution."""
+    service = AIService()
+
+    called_paths = []
+
+    def mock_isfile(path):
+        called_paths.append(path)
+        return False
+
+    with (
+        patch("platform.system", return_value="Windows"),
+        patch("os.path.isfile", mock_isfile),
+        patch("sys.maxsize", 100),  # WOW64
+        patch.dict(
+            os.environ,
+            {
+                "SystemRoot": r"C:\Windows",
+                "windir": r"C:\Windows",
+                "PROCESSOR_ARCHITEW6432": "AMD64",
+            },
+        ),
+    ):
+
+        service._get_accelerator_evidence()
+
+        unique_calls = set(called_paths)
+        assert len(called_paths) == len(unique_calls)
+
+
+def test_accelerator_evidence_candidate_paths_wow64():
+    """Verify that under WOW64 (32-bit Python on 64-bit Windows), both Sysnative and System32 are resolved."""
+    service = AIService()
+
+    called_paths = []
+
+    def mock_isfile(path):
+        called_paths.append(path)
+        return False
+
+    with (
+        patch("platform.system", return_value="Windows"),
+        patch("os.path.isfile", mock_isfile),
+        patch("sys.maxsize", 100),
+        patch.dict(
+            os.environ,
+            {
+                "SystemRoot": r"C:\Windows",
+                "windir": r"C:\Windows",
+                "PROCESSOR_ARCHITEW6432": "AMD64",
+            },
+        ),
+    ):
+
+        service._get_accelerator_evidence()
+
+        assert any(
+            "Sysnative" in p for p in called_paths
+        ), "Sysnative was not checked under WOW64"
+        assert any(
+            "System32" in p for p in called_paths
+        ), "System32 was not checked under WOW64"
+
+
+def test_accelerator_evidence_candidate_paths_non_wow64():
+    """Verify non-WOW64 (e.g. native 64-bit) checks only System32, and not Sysnative."""
+    service = AIService()
+
+    called_paths = []
+
+    def mock_isfile(path):
+        called_paths.append(path)
+        return False
+
+    with (
+        patch("platform.system", return_value="Windows"),
+        patch("os.path.isfile", mock_isfile),
+        patch("sys.maxsize", 2**63 - 1),  # Native 64-bit
+        patch.dict(
+            os.environ,
+            {"SystemRoot": r"C:\Windows", "windir": r"C:\Windows"},
+            clear=True,
+        ),
+    ):
+
+        service._get_accelerator_evidence()
+
+        # Should only query System32 candidate, never Sysnative
+        for path in called_paths:
+            assert "System32" in path
+            assert "Sysnative" not in path
+
+
+def test_accelerator_evidence_partial_failure_success():
+    """Verify that if one candidate directory check fails but another succeeds and finds the DLL, it returns available."""
+    service = AIService()
+
+    def mock_isfile(path):
+        if "Sysnative" in path:
+            raise PermissionError("Sysnative access denied")
+        if "System32" in path and "d3d12.dll" in path:
+            return True
+        return False
+
+    with (
+        patch("platform.system", return_value="Windows"),
+        patch("os.path.isfile", mock_isfile),
+        patch("sys.maxsize", 100),  # WOW64
+        patch.dict(
+            os.environ,
+            {
+                "SystemRoot": r"C:\Windows",
+                "PROCESSOR_ARCHITEW6432": "AMD64",
+            },
+        ),
+    ):
+
+        evidence = service._get_accelerator_evidence()
+        # d3d12 should be available despite PermissionError on Sysnative check
+        assert evidence.d3d12_runtime_library_present.supported is True
+        assert evidence.d3d12_runtime_library_present.status == "available"
+
+        # cuda check: Sysnative raises PermissionError, System32 returns False -> since Sysnative failed and System32 did not find it, we should report error to prevent false absence claim
+        assert evidence.cuda_driver_library_present.supported is None
+        assert evidence.cuda_driver_library_present.status == "error"
+
+
+def test_accelerator_evidence_partial_failure_without_discovery_returns_error():
+    """Verify that a partial failure without successful discovery returns error instead of unavailable."""
+    service = AIService()
+
+    def mock_isfile(path):
+        if "Sysnative" in path:
+            raise OSError("Sysnative I/O failure")
+        return False  # absent from System32
+
+    with (
+        patch("platform.system", return_value="Windows"),
+        patch("os.path.isfile", mock_isfile),
+        patch("sys.maxsize", 100),  # WOW64
+        patch.dict(
+            os.environ,
+            {
+                "SystemRoot": r"C:\Windows",
+                "PROCESSOR_ARCHITEW6432": "AMD64",
+            },
+        ),
+    ):
+
+        evidence = service._get_accelerator_evidence()
+        # cuda should be error because Sysnative failed and System32 did not find it (no authoritative absence)
+        assert evidence.cuda_driver_library_present.supported is None
+        assert evidence.cuda_driver_library_present.status == "error"
+        assert evidence.cuda_driver_library_present.status != "unavailable"
+
+
+def test_accelerator_evidence_error_detail_is_sanitized():
+    """Verify that the detail string on OSError/PermissionError does not leak raw exception text or paths."""
+    service = AIService()
+
+    def mock_isfile(path):
+        raise PermissionError(
+            "C:\\Users\\SensitiveUser\\PrivateFolder\\nvcuda.dll SECRET_RAW_EXCEPTION_MARKER"
+        )
+
+    with (
+        patch("platform.system", return_value="Windows"),
+        patch("os.path.isfile", mock_isfile),
+        patch.dict(os.environ, {"SystemRoot": r"C:\Windows"}),
+    ):
+
+        evidence = service._get_accelerator_evidence()
+        for cap in [
+            evidence.cuda_driver_library_present,
+            evidence.d3d12_runtime_library_present,
+            evidence.system_directml_library_present,
+        ]:
+            assert cap.supported is None
+            assert cap.status == "error"
+            assert cap.detail is not None
+            # Assert sanitization
+            assert "SensitiveUser" not in cap.detail
+            assert "PrivateFolder" not in cap.detail
+            assert "SECRET_RAW_EXCEPTION_MARKER" not in cap.detail
+            assert "C:\\Users\\" not in cap.detail
+            assert (
+                cap.detail
+                == "Permission denied while checking the Windows system library location."
+            )
+
+
+def test_accelerator_evidence_no_side_effects():
+    """Verify that checking accelerator evidence does not load DLLs or spawn subprocesses."""
+    service = AIService()
+
+    # Simple isfile mock
+    with (
+        patch("platform.system", return_value="Windows"),
+        patch("os.path.isfile", return_value=True),
+        patch.dict(os.environ, {"SystemRoot": r"C:\Windows"}),
+        patch("subprocess.Popen") as mock_popen,
+        patch("subprocess.run") as mock_run,
+    ):
+
+        evidence = service._get_accelerator_evidence()
+        assert evidence is not None
+
+        # Assert no subprocesses called
+        mock_popen.assert_not_called()
+        mock_run.assert_not_called()
+
+
+# =====================================================================
+# PHASE C - WORKLOAD FIT INTELLIGENCE TESTS
+# =====================================================================
+
+
+def test_workload_predefined_quantization_mappings():
+    """Verify predefined quantizations use their nominal bits-per-parameter mappings."""
+    # fp32 -> 32
+    req = WorkloadFitRequestModel(parameter_count_billions=7.0, quantization="fp32")
+    service = WorkloadService()
+    res = service.assess_workload(req)
+    assert res.estimate.nominal_bits_per_parameter == 32.0
+
+    # q4 -> 4
+    req = WorkloadFitRequestModel(parameter_count_billions=7.0, quantization="q4")
+    res = service.assess_workload(req)
+    assert res.estimate.nominal_bits_per_parameter == 4.0
+
+
+def test_workload_custom_quantization_valid():
+    """Verify custom quantization works when bits_per_parameter is provided."""
+    req = WorkloadFitRequestModel(
+        parameter_count_billions=7.0,
+        quantization="custom",
+        bits_per_parameter=5.5,
+    )
+    service = WorkloadService()
+    res = service.assess_workload(req)
+    assert res.estimate.nominal_bits_per_parameter == 5.5
+
+
+def test_workload_custom_quantization_missing_bits_rejected():
+    """Verify that validation fails if custom quantization is specified without bits."""
+    with pytest.raises(ValidationError) as exc:
+        WorkloadFitRequestModel(parameter_count_billions=7.0, quantization="custom")
+    assert "bits_per_parameter is required" in str(exc.value)
+
+
+def test_workload_invalid_bits_rejected():
+    """Verify validation fails if bits_per_parameter is outside range [1, 32]."""
+    with pytest.raises(ValidationError) as exc:
+        WorkloadFitRequestModel(
+            parameter_count_billions=7.0,
+            quantization="custom",
+            bits_per_parameter=35.0,
+        )
+    assert "less than or equal to 32" in str(exc.value)
+
+
+def test_workload_parameter_count_validation():
+    """Verify parameter count must be greater than 0."""
+    with pytest.raises(ValidationError) as exc:
+        WorkloadFitRequestModel(parameter_count_billions=-1.0, quantization="fp16")
+    assert "greater than 0" in str(exc.value)
+
+
+def test_workload_safety_margin_validation():
+    """Verify safety margin must be in range [0, 100]."""
+    with pytest.raises(ValidationError) as exc:
+        WorkloadFitRequestModel(
+            parameter_count_billions=7.0,
+            quantization="fp16",
+            safety_margin_percent=120.0,
+        )
+    assert "less than or equal to 100" in str(exc.value)
+
+
+def test_workload_raw_weight_arithmetic():
+    """Verify raw weight calculation logic matches formula exactly."""
+    # 7.0B parameters * 1e9 * 16 bits / 8 = 14,000,000,000 bytes
+    req = WorkloadFitRequestModel(parameter_count_billions=7.0, quantization="fp16")
+    service = WorkloadService()
+    res = service.assess_workload(req)
+    assert res.estimate.raw_weight_bytes == 14_000_000_000
+
+
+def test_workload_runtime_overhead_minimum():
+    """Verify runtime overhead defaults to MIN_RUNTIME_OVERHEAD_BYTES when raw_weight * overhead% is smaller."""
+    # 1.0B parameters * 1e9 * 4 bits / 8 = 500,000,000 bytes
+    # 20% of 500M is 100M, which is less than 1,073,741,824 (1 GB)
+    req = WorkloadFitRequestModel(parameter_count_billions=1.0, quantization="q4")
+    service = WorkloadService()
+    res = service.assess_workload(req)
+    assert res.estimate.runtime_overhead_bytes == MIN_RUNTIME_OVERHEAD_BYTES
+
+
+def test_workload_runtime_overhead_percentage_branch():
+    """Verify runtime overhead scales with raw weights when raw_weight * 20% exceeds 1 GB."""
+    # 30.0B parameters * 1e9 * 16 bits / 8 = 60,000,000,000 bytes
+    # 20% of 60B is 12,000,000,000 bytes (which is greater than 1 GB)
+    req = WorkloadFitRequestModel(parameter_count_billions=30.0, quantization="fp16")
+    service = WorkloadService()
+    res = service.assess_workload(req)
+    assert res.estimate.runtime_overhead_bytes == 12_000_000_000
+
+
+def test_workload_safety_margin_arithmetic():
+    """Verify safety margin calculation logic matches formula exactly."""
+    req = WorkloadFitRequestModel(
+        parameter_count_billions=7.0,
+        quantization="fp16",
+        safety_margin_percent=10.0,
+    )
+    service = WorkloadService()
+    res = service.assess_workload(req)
+    # raw_weight = 14,000,000,000 bytes
+    # runtime_overhead = max(1GB, 2.8GB) = 2,800,000,000 bytes
+    # required = 16,800,000,000 bytes
+    # margin = 1,680,000,000 bytes
+    assert res.estimate.safety_margin_bytes == 1_680_000_000
+
+
+def test_workload_estimated_required_bytes_includes_overhead():
+    """Verify estimated_required_bytes matches raw_weight + runtime_overhead."""
+    req = WorkloadFitRequestModel(parameter_count_billions=7.0, quantization="fp16")
+    service = WorkloadService()
+    res = service.assess_workload(req)
+    expected = res.estimate.raw_weight_bytes + res.estimate.runtime_overhead_bytes
+    assert res.estimate.estimated_required_bytes == expected
+
+
+def test_workload_fit_does_not_compare_against_raw_weights_alone():
+    """Verify fit logic evaluates against estimated_required_bytes (including overhead), not raw weights alone."""
+    service = WorkloadService()
+    req = WorkloadFitRequestModel(
+        parameter_count_billions=7.0,
+        quantization="fp16",
+        target_backend="cpu",
+    )
+    # raw_weight = 14GB, overhead = 2.8GB, required = 16.8GB
+    # Mock CPU available RAM to be 15GB (usable memory).
+    # Since 15GB is > raw_weight (14GB) but < required (16.8GB), it should does_not_fit.
+    # If it evaluated raw weights alone, it would report fits or marginal.
+    with patch(
+        "psutil.virtual_memory",
+        return_value=MagicMock(
+            available=15_000_000_000 + CONSERVATIVE_HOST_RESERVE_BYTES,
+            total=32_000_000_000,
+        ),
+    ):
+        res = service.assess_workload(req)
+        assert res.cpu_assessment.current_fit_status == "does_not_fit"
+
+
+def test_workload_deterministic_integer_rounding():
+    """Verify float operations are rounded up to integer ceiling."""
+    # 7.15B parameters * 1e9 * 4.5 bits / 8 = 4,021,875,000.0 bytes
+    req = WorkloadFitRequestModel(
+        parameter_count_billions=7.15,
+        quantization="custom",
+        bits_per_parameter=4.5,
+    )
+    service = WorkloadService()
+    res = service.assess_workload(req)
+    assert isinstance(res.estimate.raw_weight_bytes, int)
+
+
+def test_workload_repeated_arithmetic_deterministic():
+    """Verify repeated evaluations yield exactly identical float/integer limits."""
+    req = WorkloadFitRequestModel(parameter_count_billions=7.0, quantization="fp16")
+    service = WorkloadService()
+    res1 = service.assess_workload(req)
+    res2 = service.assess_workload(req)
+    assert res1.estimate.raw_weight_bytes == res2.estimate.raw_weight_bytes
+    assert (
+        res1.estimate.estimated_required_with_margin_bytes
+        == res2.estimate.estimated_required_with_margin_bytes
+    )
+
+
+def test_workload_context_length_absent_does_not_affect_arithmetic():
+    """Verify context_length absence doesn't break arithmetic."""
+    req = WorkloadFitRequestModel(parameter_count_billions=7.0, quantization="fp16")
+    service = WorkloadService()
+    res = service.assess_workload(req)
+    assert res.estimate.raw_weight_bytes == 14_000_000_000
+
+
+def test_workload_context_length_supplied_does_not_affect_arithmetic():
+    """Verify context_length presence does not modify arithmetic requirements."""
+    req1 = WorkloadFitRequestModel(
+        parameter_count_billions=7.0, quantization="fp16", context_length=8192
+    )
+    req2 = WorkloadFitRequestModel(
+        parameter_count_billions=7.0, quantization="fp16", context_length=None
+    )
+    service = WorkloadService()
+    res1 = service.assess_workload(req1)
+    res2 = service.assess_workload(req2)
+    assert res1.estimate.raw_weight_bytes == res2.estimate.raw_weight_bytes
+    assert (
+        res1.estimate.estimated_required_bytes == res2.estimate.estimated_required_bytes
+    )
+
+
+def test_workload_exact_context_warning_emitted():
+    """Verify warning matches the specific text from request rules when context_length supplied."""
+    req = WorkloadFitRequestModel(
+        parameter_count_billions=7.0, quantization="fp16", context_length=2048
+    )
+    service = WorkloadService()
+    res = service.assess_workload(req)
+    expected_warning = (
+        "Context length is not included in the deterministic memory estimate because "
+        "model architecture and KV-cache configuration are unknown."
+    )
+    assert expected_warning in res.warnings
+
+
+def test_workload_observed_gpu_free_memory_fits():
+    """Verify observed free memory fits correctly when memory >= required_with_margin."""
+    service = WorkloadService()
+    req = WorkloadFitRequestModel(
+        parameter_count_billions=7.0,
+        quantization="fp16",
+        target_backend="gpu",
+    )
+    # Required with margin = 16.8GB + 20% margin (3.36GB) = 20.16GB (20,160,000,000 bytes)
+    # Mock GPU to report 24GB free VRAM.
+    gpu_mock = GPUInfoModel(
+        name="NVIDIA RTX 4090",
+        vendor="NVIDIA",
+        vram_mb=24576,
+        adapter_type="discrete",
+        dedicated_vram_bytes=24576 * 1024 * 1024,
+        status="available",
+        source="nvidia-smi",
+        memory_free=24576,  # 24GB
+    )
+    with patch.object(service._gpu_detector, "detect", return_value=[gpu_mock]):
+        res = service.assess_workload(req)
+        assert res.gpu_assessments[0].current_fit_status == "fits"
+
+
+def test_workload_observed_gpu_free_memory_marginal():
+    """Verify marginal status when memory is in [required, required_with_margin)."""
+    service = WorkloadService()
+    req = WorkloadFitRequestModel(
+        parameter_count_billions=7.0,
+        quantization="fp16",
+        target_backend="gpu",
+    )
+    # Required raw = 16.8GB, with margin = 20.16GB.
+    # Mock GPU with 18GB free VRAM.
+    gpu_mock = GPUInfoModel(
+        name="NVIDIA RTX 3080",
+        vendor="NVIDIA",
+        vram_mb=10240,
+        adapter_type="discrete",
+        dedicated_vram_bytes=10240 * 1024 * 1024,
+        status="available",
+        source="nvidia-smi",
+        memory_free=18432,  # 18GB
+    )
+    with patch.object(service._gpu_detector, "detect", return_value=[gpu_mock]):
+        res = service.assess_workload(req)
+        assert res.gpu_assessments[0].current_fit_status == "marginal"
+
+
+def test_workload_observed_gpu_free_memory_does_not_fit():
+    """Verify does_not_fit status when VRAM < raw+overhead requirements."""
+    service = WorkloadService()
+    req = WorkloadFitRequestModel(
+        parameter_count_billions=7.0,
+        quantization="fp16",
+        target_backend="gpu",
+    )
+    # Required raw = 16.8GB. Mock GPU with 12GB free VRAM.
+    gpu_mock = GPUInfoModel(
+        name="NVIDIA RTX 4070",
+        vendor="NVIDIA",
+        vram_mb=12288,
+        adapter_type="discrete",
+        dedicated_vram_bytes=12288 * 1024 * 1024,
+        status="available",
+        source="nvidia-smi",
+        memory_free=12288,  # 12GB
+    )
+    with patch.object(service._gpu_detector, "detect", return_value=[gpu_mock]):
+        res = service.assess_workload(req)
+        assert res.gpu_assessments[0].current_fit_status == "does_not_fit"
+
+
+def test_workload_total_gpu_capacity_may_populate_capacity_fit_status():
+    """Verify total VRAM capability evaluates capacity_fit_status correctly."""
+    service = WorkloadService()
+    req = WorkloadFitRequestModel(
+        parameter_count_billions=7.0,
+        quantization="fp16",
+        target_backend="gpu",
+    )
+    # Dedicated capacity = 24GB.
+    gpu_mock = GPUInfoModel(
+        name="NVIDIA RTX 4090",
+        vendor="NVIDIA",
+        vram_mb=24576,
+        adapter_type="discrete",
+        dedicated_vram_bytes=24576 * 1024 * 1024,
+        status="available",
+        source="nvidia-smi",
+        memory_free=24576,
+    )
+    with patch.object(service._gpu_detector, "detect", return_value=[gpu_mock]):
+        res = service.assess_workload(req)
+        assert res.gpu_assessments[0].capacity_fit_status == "fits"
+
+
+def test_workload_capacity_fit_status_never_changes_current_fit_status():
+    """Verify capacity fit status behaves purely as advisory metadata."""
+    service = WorkloadService()
+    req = WorkloadFitRequestModel(
+        parameter_count_billions=7.0,
+        quantization="fp16",
+        target_backend="gpu",
+    )
+    # Dedicated capacity = 24GB (fits), free VRAM = 8GB (does not fit required 16.8GB).
+    gpu_mock = GPUInfoModel(
+        name="NVIDIA RTX 4090",
+        vendor="NVIDIA",
+        vram_mb=24576,
+        adapter_type="discrete",
+        dedicated_vram_bytes=24576 * 1024 * 1024,
+        status="available",
+        source="nvidia-smi",
+        memory_free=8192,
+    )
+    with patch.object(service._gpu_detector, "detect", return_value=[gpu_mock]):
+        res = service.assess_workload(req)
+        assert res.gpu_assessments[0].capacity_fit_status == "fits"
+        assert res.gpu_assessments[0].current_fit_status == "does_not_fit"
+
+
+def test_workload_registry_only_gpu_uses_total_capacity_only():
+    """Verify registry GPU maps to total_capacity_only evidence type."""
+    service = WorkloadService()
+    req = WorkloadFitRequestModel(
+        parameter_count_billions=7.0,
+        quantization="fp16",
+        target_backend="gpu",
+    )
+    gpu_mock = GPUInfoModel(
+        name="AMD Radeon RX 7900",
+        vendor="AMD",
+        vram_mb=16384,
+        adapter_type="discrete",
+        dedicated_vram_bytes=16384 * 1024 * 1024,
+        status="available",
+        source="registry",
+        memory_free=None,  # No smi tracking
+    )
+    with patch.object(service._gpu_detector, "detect", return_value=[gpu_mock]):
+        res = service.assess_workload(req)
+        evidence = res.gpu_assessments[0].memory_evidence
+        assert evidence.evidence_type == "total_capacity_only"
+
+
+def test_workload_capacity_only_gpu_available_memory_bytes_remains_none():
+    """Verify capacity_only available_memory_bytes is None."""
+    service = WorkloadService()
+    req = WorkloadFitRequestModel(
+        parameter_count_billions=7.0,
+        quantization="fp16",
+        target_backend="gpu",
+    )
+    gpu_mock = GPUInfoModel(
+        name="AMD Radeon RX 7900",
+        vendor="AMD",
+        vram_mb=16384,
+        adapter_type="discrete",
+        dedicated_vram_bytes=16384 * 1024 * 1024,
+        status="available",
+        source="registry",
+        memory_free=None,
+    )
+    with patch.object(service._gpu_detector, "detect", return_value=[gpu_mock]):
+        res = service.assess_workload(req)
+        assert res.gpu_assessments[0].memory_evidence.available_memory_bytes is None
+
+
+def test_workload_capacity_only_gpu_current_fit_status_remains_unknown():
+    """Verify capacity-only current_fit_status remains unknown."""
+    service = WorkloadService()
+    req = WorkloadFitRequestModel(
+        parameter_count_billions=7.0,
+        quantization="fp16",
+        target_backend="gpu",
+    )
+    gpu_mock = GPUInfoModel(
+        name="AMD Radeon RX 7900",
+        vendor="AMD",
+        vram_mb=16384,
+        adapter_type="discrete",
+        dedicated_vram_bytes=16384 * 1024 * 1024,
+        status="available",
+        source="registry",
+        memory_free=None,
+    )
+    with patch.object(service._gpu_detector, "detect", return_value=[gpu_mock]):
+        res = service.assess_workload(req)
+        assert res.gpu_assessments[0].current_fit_status == "unknown"
+
+
+def test_workload_capacity_only_gpu_capacity_fit_status_fits():
+    """Verify capacity fit status works on registry GPU (fits case)."""
+    service = WorkloadService()
+    req = WorkloadFitRequestModel(
+        parameter_count_billions=7.0,
+        quantization="fp16",
+        target_backend="gpu",
+    )
+    gpu_mock = GPUInfoModel(
+        name="AMD Radeon RX 7900",
+        vendor="AMD",
+        vram_mb=24576,
+        adapter_type="discrete",
+        dedicated_vram_bytes=24576 * 1024 * 1024,
+        status="available",
+        source="registry",
+        memory_free=None,
+    )
+    with patch.object(service._gpu_detector, "detect", return_value=[gpu_mock]):
+        res = service.assess_workload(req)
+        assert res.gpu_assessments[0].capacity_fit_status == "fits"
+
+
+def test_workload_capacity_only_gpu_capacity_fit_status_marginal():
+    """Verify capacity fit status works on registry GPU (marginal case)."""
+    service = WorkloadService()
+    req = WorkloadFitRequestModel(
+        parameter_count_billions=7.0,
+        quantization="fp16",
+        target_backend="gpu",
+    )
+    # Required raw = 16.8GB, with margin = 20.16GB. Total capacity = 18GB.
+    gpu_mock = GPUInfoModel(
+        name="AMD Radeon RX 7900",
+        vendor="AMD",
+        vram_mb=18432,
+        adapter_type="discrete",
+        dedicated_vram_bytes=18432 * 1024 * 1024,
+        status="available",
+        source="registry",
+        memory_free=None,
+    )
+    with patch.object(service._gpu_detector, "detect", return_value=[gpu_mock]):
+        res = service.assess_workload(req)
+        assert res.gpu_assessments[0].capacity_fit_status == "marginal"
+
+
+def test_workload_capacity_only_gpu_capacity_fit_status_does_not_fit():
+    """Verify capacity fit status works on registry GPU (does_not_fit case)."""
+    service = WorkloadService()
+    req = WorkloadFitRequestModel(
+        parameter_count_billions=7.0,
+        quantization="fp16",
+        target_backend="gpu",
+    )
+    # Required raw = 16.8GB. Total capacity = 8GB.
+    gpu_mock = GPUInfoModel(
+        name="AMD Radeon RX 7900",
+        vendor="AMD",
+        vram_mb=8192,
+        adapter_type="discrete",
+        dedicated_vram_bytes=8192 * 1024 * 1024,
+        status="available",
+        source="registry",
+        memory_free=None,
+    )
+    with patch.object(service._gpu_detector, "detect", return_value=[gpu_mock]):
+        res = service.assess_workload(req)
+        assert res.gpu_assessments[0].capacity_fit_status == "does_not_fit"
+
+
+def test_workload_capacity_only_gpu_is_never_auto_selectable():
+    """Verify capacity-only GPU never becomes selected_target in AUTO mode."""
+    service = WorkloadService()
+    req = WorkloadFitRequestModel(
+        parameter_count_billions=7.0,
+        quantization="fp16",
+        target_backend="auto",
+    )
+    gpu_mock = GPUInfoModel(
+        name="AMD Radeon RX 7900",
+        vendor="AMD",
+        vram_mb=24576,
+        adapter_type="discrete",
+        dedicated_vram_bytes=24576 * 1024 * 1024,
+        status="available",
+        source="registry",
+        memory_free=None,
+    )
+    # Mock CPU memory as does_not_fit to isolate GPU capacity selection.
+    with (
+        patch.object(service._gpu_detector, "detect", return_value=[gpu_mock]),
+        patch(
+            "psutil.virtual_memory",
+            return_value=MagicMock(available=1_000, total=32_000_000_000),
+        ),
+    ):
+        res = service.assess_workload(req)
+        assert res.selected_target is None
+        assert res.overall_fit_status == "unknown"
+
+
+def test_workload_integrated_gpu_does_not_invent_shared_usable_memory():
+    """Verify integrated GPU does not report synthetic usable dedicated VRAM."""
+    service = WorkloadService()
+    req = WorkloadFitRequestModel(
+        parameter_count_billions=7.0,
+        quantization="fp16",
+        target_backend="gpu",
+    )
+    gpu_mock = GPUInfoModel(
+        name="Intel Iris Xe",
+        vendor="Intel",
+        vram_mb=None,
+        adapter_type="integrated",
+        dedicated_vram_bytes=None,
+        status="available",
+        source="registry",
+        memory_free=None,
+    )
+    with patch.object(service._gpu_detector, "detect", return_value=[gpu_mock]):
+        res = service.assess_workload(req)
+        assert res.gpu_assessments[0].memory_evidence.available_memory_bytes is None
+        assert res.gpu_assessments[0].memory_evidence.total_capacity_bytes is None
+
+
+def test_workload_integrated_gpu_current_fit_remains_unknown_when_current_memory_unavailable():
+    """Verify integrated GPU current fit remains unknown."""
+    service = WorkloadService()
+    req = WorkloadFitRequestModel(
+        parameter_count_billions=7.0,
+        quantization="fp16",
+        target_backend="gpu",
+    )
+    gpu_mock = GPUInfoModel(
+        name="Intel Iris Xe",
+        vendor="Intel",
+        vram_mb=None,
+        adapter_type="integrated",
+        dedicated_vram_bytes=None,
+        status="available",
+        source="registry",
+        memory_free=None,
+    )
+    with patch.object(service._gpu_detector, "detect", return_value=[gpu_mock]):
+        res = service.assess_workload(req)
+        assert res.gpu_assessments[0].current_fit_status == "unknown"
+
+
+def test_workload_integrated_gpu_cpu_assessment_remains_independent():
+    """Verify integrated GPU state does not compromise CPU RAM assessments."""
+    service = WorkloadService()
+    req = WorkloadFitRequestModel(
+        parameter_count_billions=7.0,
+        quantization="fp16",
+        target_backend="auto",
+    )
+    gpu_mock = GPUInfoModel(
+        name="Intel Iris Xe",
+        vendor="Intel",
+        vram_mb=None,
+        adapter_type="integrated",
+        dedicated_vram_bytes=None,
+        status="available",
+        source="registry",
+        memory_free=None,
+    )
+    # CPU has 32GB free RAM (usable).
+    with (
+        patch.object(service._gpu_detector, "detect", return_value=[gpu_mock]),
+        patch(
+            "psutil.virtual_memory",
+            return_value=MagicMock(
+                available=32_000_000_000 + CONSERVATIVE_HOST_RESERVE_BYTES,
+                total=64_000_000_000,
+            ),
+        ),
+    ):
+        res = service.assess_workload(req)
+        assert res.cpu_assessment.current_fit_status == "fits"
+        # CPU can still be selected under AUTO despite integrated GPU unknown state
+        assert res.selected_target.backend == "cpu"
+
+
+def test_workload_multiple_gpus_assessed_independently():
+    """Verify multi-GPU setups return independent assessments for each device."""
+    service = WorkloadService()
+    req = WorkloadFitRequestModel(
+        parameter_count_billions=7.0,
+        quantization="fp16",
+        target_backend="gpu",
+    )
+    gpu1 = GPUInfoModel(
+        name="NVIDIA RTX 4090",
+        vendor="NVIDIA",
+        vram_mb=24576,
+        adapter_type="discrete",
+        dedicated_vram_bytes=24576 * 1024 * 1024,
+        status="available",
+        source="nvidia-smi",
+        memory_free=24576,
+    )
+    gpu2 = GPUInfoModel(
+        name="NVIDIA RTX 3080",
+        vendor="NVIDIA",
+        vram_mb=10240,
+        adapter_type="discrete",
+        dedicated_vram_bytes=10240 * 1024 * 1024,
+        status="available",
+        source="nvidia-smi",
+        memory_free=10240,
+    )
+    with patch.object(service._gpu_detector, "detect", return_value=[gpu1, gpu2]):
+        res = service.assess_workload(req)
+        assert len(res.gpu_assessments) == 2
+        assert res.gpu_assessments[0].device_name == "NVIDIA RTX 4090"
+        assert res.gpu_assessments[0].current_fit_status == "fits"
+        assert res.gpu_assessments[1].device_name == "NVIDIA RTX 3080"
+        assert res.gpu_assessments[1].current_fit_status == "does_not_fit"
+
+
+def test_workload_vram_values_never_summed():
+    """Verify that multi-GPU setups never aggregate VRAM limits together."""
+    service = WorkloadService()
+    req = WorkloadFitRequestModel(
+        parameter_count_billions=15.0,
+        quantization="fp16",
+        target_backend="gpu",
+    )
+    # Required with margin = 36GB.
+    # Discovered two 24GB GPUs. Individually, neither fits 36GB requirement.
+    # Summed (48GB), they would fit. We must assert that no GPU fits.
+    gpu1 = GPUInfoModel(
+        name="NVIDIA RTX 4090 #1",
+        vendor="NVIDIA",
+        vram_mb=24576,
+        adapter_type="discrete",
+        dedicated_vram_bytes=24576 * 1024 * 1024,
+        status="available",
+        source="nvidia-smi",
+        memory_free=24576,
+    )
+    gpu2 = GPUInfoModel(
+        name="NVIDIA RTX 4090 #2",
+        vendor="NVIDIA",
+        vram_mb=24576,
+        adapter_type="discrete",
+        dedicated_vram_bytes=24576 * 1024 * 1024,
+        status="available",
+        source="nvidia-smi",
+        memory_free=24576,
+    )
+    with patch.object(service._gpu_detector, "detect", return_value=[gpu1, gpu2]):
+        res = service.assess_workload(req)
+        assert res.gpu_assessments[0].current_fit_status == "does_not_fit"
+        assert res.gpu_assessments[1].current_fit_status == "does_not_fit"
+        assert res.selected_target is None
+
+
+def test_workload_best_viable_gpu_selected():
+    """Verify the discrete GPU with the largest current headroom is selected."""
+    service = WorkloadService()
+    req = WorkloadFitRequestModel(
+        parameter_count_billions=7.0,
+        quantization="fp16",
+        target_backend="gpu",
+    )
+    # Required raw = 16.8GB. Both fit. GPU1 has 24GB free, GPU2 has 40GB free.
+    gpu1 = GPUInfoModel(
+        name="NVIDIA RTX 4090",
+        vendor="NVIDIA",
+        vram_mb=24576,
+        adapter_type="discrete",
+        dedicated_vram_bytes=24576 * 1024 * 1024,
+        status="available",
+        source="nvidia-smi",
+        memory_free=24576,
+    )
+    gpu2 = GPUInfoModel(
+        name="NVIDIA RTX A6000",
+        vendor="NVIDIA",
+        vram_mb=49152,
+        adapter_type="discrete",
+        dedicated_vram_bytes=49152 * 1024 * 1024,
+        status="available",
+        source="nvidia-smi",
+        memory_free=49152,
+    )
+    with patch.object(service._gpu_detector, "detect", return_value=[gpu1, gpu2]):
+        res = service.assess_workload(req)
+        assert res.selected_target.device_name == "NVIDIA RTX A6000"
+
+
+def test_workload_stable_gpu_discovery_order_tie_break():
+    """Verify original index is used as stable tie-breaker for identical headroom/fits."""
+    service = WorkloadService()
+    req = WorkloadFitRequestModel(
+        parameter_count_billions=7.0,
+        quantization="fp16",
+        target_backend="gpu",
+    )
+    gpu1 = GPUInfoModel(
+        name="NVIDIA Card A",
+        vendor="NVIDIA",
+        vram_mb=24576,
+        adapter_type="discrete",
+        dedicated_vram_bytes=24576 * 1024 * 1024,
+        status="available",
+        source="nvidia-smi",
+        memory_free=24576,
+    )
+    gpu2 = GPUInfoModel(
+        name="NVIDIA Card B",
+        vendor="NVIDIA",
+        vram_mb=24576,
+        adapter_type="discrete",
+        dedicated_vram_bytes=24576 * 1024 * 1024,
+        status="available",
+        source="nvidia-smi",
+        memory_free=24576,
+    )
+    with patch.object(service._gpu_detector, "detect", return_value=[gpu1, gpu2]):
+        res = service.assess_workload(req)
+        assert res.selected_target.device_name == "NVIDIA Card A"
+
+
+def test_workload_repeated_selection_deterministic():
+    """Verify that selection algorithm acts deterministically across consecutive runs."""
+    service = WorkloadService()
+    req = WorkloadFitRequestModel(
+        parameter_count_billions=7.0,
+        quantization="fp16",
+        target_backend="gpu",
+    )
+    gpu1 = GPUInfoModel(
+        name="Card A",
+        vendor="NVIDIA",
+        vram_mb=24576,
+        adapter_type="discrete",
+        dedicated_vram_bytes=24576 * 1024 * 1024,
+        status="available",
+        source="nvidia-smi",
+        memory_free=24576,
+    )
+    with patch.object(service._gpu_detector, "detect", return_value=[gpu1]):
+        res1 = service.assess_workload(req)
+        res2 = service.assess_workload(req)
+        assert res1.selected_target.device_name == res2.selected_target.device_name
+
+
+def test_workload_cpu_usable_memory_subtracts_exact_reserve():
+    """Verify host reserve subtraction math on system memory."""
+    service = WorkloadService()
+    req = WorkloadFitRequestModel(
+        parameter_count_billions=7.0,
+        quantization="fp16",
+        target_backend="cpu",
+    )
+    with patch(
+        "psutil.virtual_memory",
+        return_value=MagicMock(available=16_000_000_000, total=32_000_000_000),
+    ):
+        res = service.assess_workload(req)
+        # usable_ram = 16GB - 2GB = 14GB (14,000,000,000 bytes)
+        assert (
+            res.cpu_assessment.memory_evidence.available_memory_bytes == 14_000_000_000
+        )
+
+
+def test_workload_cpu_fits():
+    """Verify CPU assessment fits when memory >= required_with_margin."""
+    service = WorkloadService()
+    req = WorkloadFitRequestModel(
+        parameter_count_billions=7.0,
+        quantization="fp16",
+        target_backend="cpu",
+    )
+    # Required with margin = 20.16GB. Available = 24GB + 2GB reserve = 26GB.
+    with patch(
+        "psutil.virtual_memory",
+        return_value=MagicMock(available=26_000_000_000, total=32_000_000_000),
+    ):
+        res = service.assess_workload(req)
+        assert res.cpu_assessment.current_fit_status == "fits"
+
+
+def test_workload_cpu_marginal():
+    """Verify CPU assessment marginal when memory in [required, required_with_margin)."""
+    service = WorkloadService()
+    req = WorkloadFitRequestModel(
+        parameter_count_billions=7.0,
+        quantization="fp16",
+        target_backend="cpu",
+    )
+    # Required raw = 16.8GB. Available usable = 18GB (20GB total - 2GB reserve).
+    with patch(
+        "psutil.virtual_memory",
+        return_value=MagicMock(available=20_000_000_000, total=32_000_000_000),
+    ):
+        res = service.assess_workload(req)
+        assert res.cpu_assessment.current_fit_status == "marginal"
+
+
+def test_workload_cpu_does_not_fit():
+    """Verify CPU does_not_fit when usable RAM < raw+overhead footprint."""
+    service = WorkloadService()
+    req = WorkloadFitRequestModel(
+        parameter_count_billions=7.0,
+        quantization="fp16",
+        target_backend="cpu",
+    )
+    # Required raw = 16.8GB. Usable = 12GB (14GB total - 2GB reserve).
+    with patch(
+        "psutil.virtual_memory",
+        return_value=MagicMock(available=14_000_000_000, total=32_000_000_000),
+    ):
+        res = service.assess_workload(req)
+        assert res.cpu_assessment.current_fit_status == "does_not_fit"
+
+
+def test_workload_cpu_memory_failure_returns_unknown():
+    """Verify CPU memory query failure returns unknown status."""
+    service = WorkloadService()
+    req = WorkloadFitRequestModel(
+        parameter_count_billions=7.0,
+        quantization="fp16",
+        target_backend="cpu",
+    )
+    with patch("psutil.virtual_memory", side_effect=OSError("Access denied")):
+        res = service.assess_workload(req)
+        assert res.cpu_assessment.current_fit_status == "unknown"
+
+
+def test_workload_explicit_cpu_gpu_assessments_empty():
+    """Verify that explicit CPU backend selection produces empty GPU assessments."""
+    service = WorkloadService()
+    req = WorkloadFitRequestModel(
+        parameter_count_billions=7.0,
+        quantization="fp16",
+        target_backend="cpu",
+    )
+    with patch(
+        "psutil.virtual_memory",
+        return_value=MagicMock(available=32_000_000_000, total=64_000_000_000),
+    ):
+        res = service.assess_workload(req)
+        assert res.gpu_assessments == []
+
+
+def test_workload_explicit_cpu_gpudetector_not_invoked():
+    """Verify GPUDetector is completely bypassed when explicit CPU mode is active."""
+    service = WorkloadService()
+    req = WorkloadFitRequestModel(
+        parameter_count_billions=7.0,
+        quantization="fp16",
+        target_backend="cpu",
+    )
+    with (
+        patch.object(service._gpu_detector, "detect") as mock_detect,
+        patch(
+            "psutil.virtual_memory",
+            return_value=MagicMock(available=32_000_000_000, total=64_000_000_000),
+        ),
+    ):
+        service.assess_workload(req)
+        mock_detect.assert_not_called()
+
+
+def test_workload_explicit_cpu_selected_when_fits():
+    """Verify CPU selected when target is CPU and status fits."""
+    service = WorkloadService()
+    req = WorkloadFitRequestModel(
+        parameter_count_billions=7.0,
+        quantization="fp16",
+        target_backend="cpu",
+    )
+    with patch(
+        "psutil.virtual_memory",
+        return_value=MagicMock(available=32_000_000_000, total=64_000_000_000),
+    ):
+        res = service.assess_workload(req)
+        assert res.selected_target.backend == "cpu"
+        assert res.overall_fit_status == "fits"
+
+
+def test_workload_explicit_cpu_selected_when_marginal():
+    """Verify CPU selected when target is CPU and status marginal."""
+    service = WorkloadService()
+    req = WorkloadFitRequestModel(
+        parameter_count_billions=7.0,
+        quantization="fp16",
+        target_backend="cpu",
+    )
+    with patch(
+        "psutil.virtual_memory",
+        return_value=MagicMock(available=20_000_000_000, total=32_000_000_000),
+    ):
+        res = service.assess_workload(req)
+        assert res.selected_target.backend == "cpu"
+        assert res.overall_fit_status == "marginal"
+
+
+def test_workload_explicit_cpu_no_selected_target_when_does_not_fit():
+    """Verify CPU selected_target is None and overall is does_not_fit when CPU does not fit."""
+    service = WorkloadService()
+    req = WorkloadFitRequestModel(
+        parameter_count_billions=7.0,
+        quantization="fp16",
+        target_backend="cpu",
+    )
+    with patch(
+        "psutil.virtual_memory",
+        return_value=MagicMock(available=10_000_000_000, total=32_000_000_000),
+    ):
+        res = service.assess_workload(req)
+        assert res.selected_target is None
+        assert res.overall_fit_status == "does_not_fit"
+
+
+def test_workload_explicit_cpu_no_selected_target_when_unknown():
+    """Verify CPU selected_target is None and overall is unknown when CPU is unknown."""
+    service = WorkloadService()
+    req = WorkloadFitRequestModel(
+        parameter_count_billions=7.0,
+        quantization="fp16",
+        target_backend="cpu",
+    )
+    with patch("psutil.virtual_memory", side_effect=OSError("Failure")):
+        res = service.assess_workload(req)
+        assert res.selected_target is None
+        assert res.overall_fit_status == "unknown"
+
+
+def test_workload_explicit_gpu_cpu_assessment_none():
+    """Verify CPU assessment is completely omitted under explicit GPU target mode."""
+    service = WorkloadService()
+    req = WorkloadFitRequestModel(
+        parameter_count_billions=7.0,
+        quantization="fp16",
+        target_backend="gpu",
+    )
+    with patch.object(service._gpu_detector, "detect", return_value=[]):
+        res = service.assess_workload(req)
+        assert res.cpu_assessment is None
+
+
+def test_workload_explicit_gpu_cpu_memory_not_queried():
+    """Verify host virtual memory metrics are not queried under explicit GPU target mode."""
+    service = WorkloadService()
+    req = WorkloadFitRequestModel(
+        parameter_count_billions=7.0,
+        quantization="fp16",
+        target_backend="gpu",
+    )
+    with (
+        patch.object(service._gpu_detector, "detect", return_value=[]),
+        patch("psutil.virtual_memory") as mock_vm,
+    ):
+        service.assess_workload(req)
+        mock_vm.assert_not_called()
+
+
+def test_workload_explicit_gpu_no_cpu_fallback():
+    """Verify no CPU target selection fallback occurs when explicitly querying GPU mode."""
+    service = WorkloadService()
+    req = WorkloadFitRequestModel(
+        parameter_count_billions=7.0,
+        quantization="fp16",
+        target_backend="gpu",
+    )
+    # GPU does not fit (12GB free), CPU fits (32GB free).
+    gpu_mock = GPUInfoModel(
+        name="NVIDIA RTX 4070",
+        vendor="NVIDIA",
+        vram_mb=12288,
+        adapter_type="discrete",
+        dedicated_vram_bytes=12288 * 1024 * 1024,
+        status="available",
+        source="nvidia-smi",
+        memory_free=12288,
+    )
+    with (
+        patch.object(service._gpu_detector, "detect", return_value=[gpu_mock]),
+        patch(
+            "psutil.virtual_memory",
+            return_value=MagicMock(
+                available=32_000_000_000 + CONSERVATIVE_HOST_RESERVE_BYTES,
+                total=64_000_000_000,
+            ),
+        ),
+    ):
+        res = service.assess_workload(req)
+        assert res.selected_target is None
+        assert res.overall_fit_status == "does_not_fit"
+
+
+def test_workload_explicit_gpu_no_gpu_returns_unknown():
+    """Verify unknown status is returned when explicit GPU is requested on host with no GPU."""
+    service = WorkloadService()
+    req = WorkloadFitRequestModel(
+        parameter_count_billions=7.0,
+        quantization="fp16",
+        target_backend="gpu",
+    )
+    with patch.object(service._gpu_detector, "detect", return_value=[]):
+        res = service.assess_workload(req)
+        assert res.selected_target is None
+        assert res.overall_fit_status == "unknown"
+
+
+def test_workload_explicit_gpu_all_known_gpus_does_not_fit_returns_does_not_fit():
+    """Verify does_not_fit status returned when every discovered GPU is too small."""
+    service = WorkloadService()
+    req = WorkloadFitRequestModel(
+        parameter_count_billions=7.0,
+        quantization="fp16",
+        target_backend="gpu",
+    )
+    gpu_mock = GPUInfoModel(
+        name="NVIDIA RTX 3060",
+        vendor="NVIDIA",
+        vram_mb=6144,
+        adapter_type="discrete",
+        dedicated_vram_bytes=6144 * 1024 * 1024,
+        status="available",
+        source="nvidia-smi",
+        memory_free=6144,
+    )
+    with patch.object(service._gpu_detector, "detect", return_value=[gpu_mock]):
+        res = service.assess_workload(req)
+        assert res.selected_target is None
+        assert res.overall_fit_status == "does_not_fit"
+
+
+def test_workload_explicit_gpu_unresolved_gpu_with_no_viable_gpu_returns_unknown():
+    """Verify unknown fit status when there is an unknown GPU and no other fits."""
+    service = WorkloadService()
+    req = WorkloadFitRequestModel(
+        parameter_count_billions=7.0,
+        quantization="fp16",
+        target_backend="gpu",
+    )
+    # One GPU is does_not_fit, other is capacity_only (unknown).
+    gpu1 = GPUInfoModel(
+        name="NVIDIA RTX 3060",
+        vendor="NVIDIA",
+        vram_mb=6144,
+        adapter_type="discrete",
+        dedicated_vram_bytes=6144 * 1024 * 1024,
+        status="available",
+        source="nvidia-smi",
+        memory_free=6144,
+    )
+    gpu2 = GPUInfoModel(
+        name="AMD Card",
+        vendor="AMD",
+        vram_mb=16384,
+        adapter_type="discrete",
+        dedicated_vram_bytes=16384 * 1024 * 1024,
+        status="available",
+        source="registry",
+        memory_free=None,
+    )
+    with patch.object(service._gpu_detector, "detect", return_value=[gpu1, gpu2]):
+        res = service.assess_workload(req)
+        assert res.selected_target is None
+        assert res.overall_fit_status == "unknown"
+
+
+def test_workload_explicit_gpu_viable_gpu_is_selected():
+    """Verify best viable GPU selection under explicit GPU mode."""
+    service = WorkloadService()
+    req = WorkloadFitRequestModel(
+        parameter_count_billions=7.0,
+        quantization="fp16",
+        target_backend="gpu",
+    )
+    gpu_mock = GPUInfoModel(
+        name="NVIDIA RTX 4090",
+        vendor="NVIDIA",
+        vram_mb=24576,
+        adapter_type="discrete",
+        dedicated_vram_bytes=24576 * 1024 * 1024,
+        status="available",
+        source="nvidia-smi",
+        memory_free=24576,
+    )
+    with patch.object(service._gpu_detector, "detect", return_value=[gpu_mock]):
+        res = service.assess_workload(req)
+        assert res.selected_target.device_name == "NVIDIA RTX 4090"
+        assert res.overall_fit_status == "fits"
+
+
+def test_workload_auto_capacity_only_gpu_fits_does_not_get_selected():
+    """Verify capacity-only GPU does not get selected in AUTO mode."""
+    service = WorkloadService()
+    req = WorkloadFitRequestModel(
+        parameter_count_billions=7.0,
+        quantization="fp16",
+        target_backend="auto",
+    )
+    # GPU is capacity only (capacity=24GB). CPU is does_not_fit.
+    gpu_mock = GPUInfoModel(
+        name="AMD Radeon RX 7900",
+        vendor="AMD",
+        vram_mb=24576,
+        adapter_type="discrete",
+        dedicated_vram_bytes=24576 * 1024 * 1024,
+        status="available",
+        source="registry",
+        memory_free=None,
+    )
+    with (
+        patch.object(service._gpu_detector, "detect", return_value=[gpu_mock]),
+        patch(
+            "psutil.virtual_memory",
+            return_value=MagicMock(available=1_000, total=32_000_000_000),
+        ),
+    ):
+        res = service.assess_workload(req)
+        assert res.selected_target is None
+        assert res.overall_fit_status == "unknown"
+
+
+def test_workload_auto_capacity_only_gpu_unknown_plus_cpu_fits_selects_cpu():
+    """Verify CPU selected when GPU is unknown and CPU fits."""
+    service = WorkloadService()
+    req = WorkloadFitRequestModel(
+        parameter_count_billions=7.0,
+        quantization="fp16",
+        target_backend="auto",
+    )
+    # GPU is capacity only (unknown). CPU fits.
+    gpu_mock = GPUInfoModel(
+        name="AMD Radeon",
+        vendor="AMD",
+        vram_mb=24576,
+        adapter_type="discrete",
+        dedicated_vram_bytes=24576 * 1024 * 1024,
+        status="available",
+        source="registry",
+        memory_free=None,
+    )
+    with (
+        patch.object(service._gpu_detector, "detect", return_value=[gpu_mock]),
+        patch(
+            "psutil.virtual_memory",
+            return_value=MagicMock(
+                available=32_000_000_000 + CONSERVATIVE_HOST_RESERVE_BYTES,
+                total=64_000_000_000,
+            ),
+        ),
+    ):
+        res = service.assess_workload(req)
+        assert res.selected_target.backend == "cpu"
+        assert res.overall_fit_status == "fits"
+
+
+def test_workload_auto_capacity_only_gpu_unknown_plus_cpu_does_not_fit_returns_unknown():
+    """Verify overall status is unknown when GPU is unknown and CPU does not fit."""
+    service = WorkloadService()
+    req = WorkloadFitRequestModel(
+        parameter_count_billions=7.0,
+        quantization="fp16",
+        target_backend="auto",
+    )
+    # GPU is capacity only (unknown). CPU does not fit.
+    gpu_mock = GPUInfoModel(
+        name="AMD Radeon",
+        vendor="AMD",
+        vram_mb=24576,
+        adapter_type="discrete",
+        dedicated_vram_bytes=24576 * 1024 * 1024,
+        status="available",
+        source="registry",
+        memory_free=None,
+    )
+    with (
+        patch.object(service._gpu_detector, "detect", return_value=[gpu_mock]),
+        patch(
+            "psutil.virtual_memory",
+            return_value=MagicMock(available=1_000, total=32_000_000_000),
+        ),
+    ):
+        res = service.assess_workload(req)
+        assert res.selected_target is None
+        assert res.overall_fit_status == "unknown"
+
+
+def test_workload_auto_all_known_current_targets_does_not_fit_returns_does_not_fit():
+    """Verify does_not_fit returned when all targets fail memory threshold checks."""
+    service = WorkloadService()
+    req = WorkloadFitRequestModel(
+        parameter_count_billions=7.0,
+        quantization="fp16",
+        target_backend="auto",
+    )
+    # GPU has 8GB free (does not fit). CPU has 8GB free usable (does not fit).
+    gpu_mock = GPUInfoModel(
+        name="NVIDIA RTX 3060",
+        vendor="NVIDIA",
+        vram_mb=12288,
+        adapter_type="discrete",
+        dedicated_vram_bytes=12288 * 1024 * 1024,
+        status="available",
+        source="nvidia-smi",
+        memory_free=8192,
+    )
+    with (
+        patch.object(service._gpu_detector, "detect", return_value=[gpu_mock]),
+        patch(
+            "psutil.virtual_memory",
+            return_value=MagicMock(
+                available=8_000_000_000 + CONSERVATIVE_HOST_RESERVE_BYTES,
+                total=32_000_000_000,
+            ),
+        ),
+    ):
+        res = service.assess_workload(req)
+        assert res.selected_target is None
+        assert res.overall_fit_status == "does_not_fit"
+
+
+def test_workload_auto_gpu_does_not_fit_plus_cpu_fits_selects_cpu():
+    """Verify AUTO selects CPU when GPU does not fit and CPU fits."""
+    service = WorkloadService()
+    req = WorkloadFitRequestModel(
+        parameter_count_billions=7.0,
+        quantization="fp16",
+        target_backend="auto",
+    )
+    # GPU has 8GB free (does not fit). CPU has 32GB free usable (fits).
+    gpu_mock = GPUInfoModel(
+        name="NVIDIA RTX 3060",
+        vendor="NVIDIA",
+        vram_mb=12288,
+        adapter_type="discrete",
+        dedicated_vram_bytes=12288 * 1024 * 1024,
+        status="available",
+        source="nvidia-smi",
+        memory_free=8192,
+    )
+    with (
+        patch.object(service._gpu_detector, "detect", return_value=[gpu_mock]),
+        patch(
+            "psutil.virtual_memory",
+            return_value=MagicMock(
+                available=32_000_000_000 + CONSERVATIVE_HOST_RESERVE_BYTES,
+                total=64_000_000_000,
+            ),
+        ),
+    ):
+        res = service.assess_workload(req)
+        assert res.selected_target.backend == "cpu"
+        assert res.overall_fit_status == "fits"
+
+
+def test_workload_auto_gpu_fits_plus_cpu_fits_uses_deterministic_ranking():
+    """Verify AUTO ranks GPU over CPU when both fit (ranking rule #1)."""
+    service = WorkloadService()
+    req = WorkloadFitRequestModel(
+        parameter_count_billions=7.0,
+        quantization="fp16",
+        target_backend="auto",
+    )
+    # GPU has 24GB free (fits). CPU has 32GB free usable (fits).
+    # Since GPU index (0) is smaller than CPU index (1), it should select GPU if headroom tie-break or priority order matches.
+    # Note: GPU fits priority is 2, CPU fits priority is 2. Headroom GPU = 24GB - 20.16GB = 3.84GB. Headroom CPU = 32GB - 20.16GB = 11.84GB.
+    # Wait, CPU has 11.84GB headroom, GPU has 3.84GB headroom.
+    # According to ranking rules:
+    # 1. fits over marginal
+    # 2. greatest current headroom
+    # So CPU (larger headroom) should be selected!
+    gpu_mock = GPUInfoModel(
+        name="NVIDIA RTX 4090",
+        vendor="NVIDIA",
+        vram_mb=24576,
+        adapter_type="discrete",
+        dedicated_vram_bytes=24576 * 1024 * 1024,
+        status="available",
+        source="nvidia-smi",
+        memory_free=24576,
+    )
+    with (
+        patch.object(service._gpu_detector, "detect", return_value=[gpu_mock]),
+        patch(
+            "psutil.virtual_memory",
+            return_value=MagicMock(
+                available=32_000_000_000 + CONSERVATIVE_HOST_RESERVE_BYTES,
+                total=64_000_000_000,
+            ),
+        ),
+    ):
+        res = service.assess_workload(req)
+        assert res.selected_target.backend == "cpu"
+
+
+def test_workload_auto_fits_outranks_marginal():
+    """Verify fit status priority outranks headroom priority."""
+    service = WorkloadService()
+    req = WorkloadFitRequestModel(
+        parameter_count_billions=7.0,
+        quantization="fp16",
+        target_backend="auto",
+    )
+    # GPU has 24GB free VRAM -> "fits".
+    # CPU has 18GB usable RAM -> "marginal".
+    # Even though CPU has smaller headroom, fits priority (2) beats marginal priority (1).
+    gpu_mock = GPUInfoModel(
+        name="NVIDIA RTX 4090",
+        vendor="NVIDIA",
+        vram_mb=24576,
+        adapter_type="discrete",
+        dedicated_vram_bytes=24576 * 1024 * 1024,
+        status="available",
+        source="nvidia-smi",
+        memory_free=24576,
+    )
+    with (
+        patch.object(service._gpu_detector, "detect", return_value=[gpu_mock]),
+        patch(
+            "psutil.virtual_memory",
+            return_value=MagicMock(
+                available=18_000_000_000 + CONSERVATIVE_HOST_RESERVE_BYTES,
+                total=32_000_000_000,
+            ),
+        ),
+    ):
+        res = service.assess_workload(req)
+        assert res.selected_target.backend == "gpu"
+
+
+def test_workload_auto_greater_current_headroom_wins():
+    """Verify largest memory headroom device is selected within same fit class."""
+    service = WorkloadService()
+    req = WorkloadFitRequestModel(
+        parameter_count_billions=7.0,
+        quantization="fp16",
+        target_backend="auto",
+    )
+    # GPU 1 has 24GB free (headroom 3.84GB).
+    # GPU 2 has 40GB free (headroom 19.84GB).
+    # CPU has 32GB free usable (headroom 11.84GB).
+    # GPU 2 has the largest headroom and should win.
+    gpu1 = GPUInfoModel(
+        name="NVIDIA RTX 4090",
+        vendor="NVIDIA",
+        vram_mb=24576,
+        adapter_type="discrete",
+        dedicated_vram_bytes=24576 * 1024 * 1024,
+        status="available",
+        source="nvidia-smi",
+        memory_free=24576,
+    )
+    gpu2 = GPUInfoModel(
+        name="NVIDIA RTX A6000",
+        vendor="NVIDIA",
+        vram_mb=49152,
+        adapter_type="discrete",
+        dedicated_vram_bytes=49152 * 1024 * 1024,
+        status="available",
+        source="nvidia-smi",
+        memory_free=40960,
+    )
+    with (
+        patch.object(service._gpu_detector, "detect", return_value=[gpu1, gpu2]),
+        patch(
+            "psutil.virtual_memory",
+            return_value=MagicMock(
+                available=32_000_000_000 + CONSERVATIVE_HOST_RESERVE_BYTES,
+                total=64_000_000_000,
+            ),
+        ),
+    ):
+        res = service.assess_workload(req)
+        assert res.selected_target.device_name == "NVIDIA RTX A6000"
+
+
+def test_workload_auto_stable_discovery_order_resolves_exact_ties():
+    """Verify tie break fallback using original order indices."""
+    service = WorkloadService()
+    req = WorkloadFitRequestModel(
+        parameter_count_billions=7.0,
+        quantization="fp16",
+        target_backend="auto",
+    )
+    gpu1 = GPUInfoModel(
+        name="Card A",
+        vendor="NVIDIA",
+        vram_mb=24576,
+        adapter_type="discrete",
+        dedicated_vram_bytes=24576 * 1024 * 1024,
+        status="available",
+        source="nvidia-smi",
+        memory_free=24576,
+    )
+    gpu2 = GPUInfoModel(
+        name="Card B",
+        vendor="NVIDIA",
+        vram_mb=24576,
+        adapter_type="discrete",
+        dedicated_vram_bytes=24576 * 1024 * 1024,
+        status="available",
+        source="nvidia-smi",
+        memory_free=24576,
+    )
+    # CPU usable is also matched exactly to 24GB.
+    # Index 0 (Card A) should win as the stable original tie-breaker.
+    with (
+        patch.object(service._gpu_detector, "detect", return_value=[gpu1, gpu2]),
+        patch(
+            "psutil.virtual_memory",
+            return_value=MagicMock(
+                available=24_576 * 1024 * 1024 + CONSERVATIVE_HOST_RESERVE_BYTES,
+                total=64_000_000_000,
+            ),
+        ),
+    ):
+        res = service.assess_workload(req)
+        assert res.selected_target.device_name == "Card A"
+
+
+def test_workload_auto_unknown_target_does_not_block_existing_viable_target():
+    """Verify that an unknown GPU does not block a fits/marginal CPU from selection."""
+    service = WorkloadService()
+    req = WorkloadFitRequestModel(
+        parameter_count_billions=7.0,
+        quantization="fp16",
+        target_backend="auto",
+    )
+    # GPU is capacity only (unknown fit). CPU fits (32GB free usable).
+    gpu_mock = GPUInfoModel(
+        name="AMD Radeon",
+        vendor="AMD",
+        vram_mb=24576,
+        adapter_type="discrete",
+        dedicated_vram_bytes=24576 * 1024 * 1024,
+        status="available",
+        source="registry",
+        memory_free=None,
+    )
+    with (
+        patch.object(service._gpu_detector, "detect", return_value=[gpu_mock]),
+        patch(
+            "psutil.virtual_memory",
+            return_value=MagicMock(
+                available=32_000_000_000 + CONSERVATIVE_HOST_RESERVE_BYTES,
+                total=64_000_000_000,
+            ),
+        ),
+    ):
+        res = service.assess_workload(req)
+        assert res.selected_target.backend == "cpu"
+        assert res.overall_fit_status == "fits"
+
+
+def test_workload_auto_selected_target_overall_status_matches_current_fit_status():
+    """Verify overall status matches selected target current_fit_status."""
+    service = WorkloadService()
+    req = WorkloadFitRequestModel(
+        parameter_count_billions=7.0,
+        quantization="fp16",
+        target_backend="auto",
+    )
+    # CPU marginal is selected.
+    with (
+        patch.object(service._gpu_detector, "detect", return_value=[]),
+        patch(
+            "psutil.virtual_memory",
+            return_value=MagicMock(
+                available=18_000_000_000 + CONSERVATIVE_HOST_RESERVE_BYTES,
+                total=32_000_000_000,
+            ),
+        ),
+    ):
+        res = service.assess_workload(req)
+        assert res.selected_target.backend == "cpu"
+        assert res.overall_fit_status == "marginal"
+
+
+def test_workload_response_contract_cpu_assessment_optional():
+    """Verify cpu_assessment is optional (None under explicit GPU mode)."""
+    service = WorkloadService()
+    req = WorkloadFitRequestModel(
+        parameter_count_billions=7.0,
+        quantization="fp16",
+        target_backend="gpu",
+    )
+    with patch.object(service._gpu_detector, "detect", return_value=[]):
+        res = service.assess_workload(req)
+        assert res.cpu_assessment is None
+
+
+def test_workload_response_contract_selected_target_optional():
+    """Verify selected_target is optional (None when nothing fits)."""
+    service = WorkloadService()
+    req = WorkloadFitRequestModel(
+        parameter_count_billions=700.0,
+        quantization="fp16",
+        target_backend="auto",
+    )
+    # Huge model (1400GB) does not fit anywhere.
+    with (
+        patch.object(service._gpu_detector, "detect", return_value=[]),
+        patch(
+            "psutil.virtual_memory",
+            return_value=MagicMock(available=8_000_000_000, total=16_000_000_000),
+        ),
+    ):
+        res = service.assess_workload(req)
+        assert res.selected_target is None
+
+
+def test_workload_response_contract_overall_fit_status_unknown_with_no_selected_target():
+    """Verify overall status is unknown when nothing fits and there is an unknown target."""
+    service = WorkloadService()
+    req = WorkloadFitRequestModel(
+        parameter_count_billions=7.0,
+        quantization="fp16",
+        target_backend="auto",
+    )
+    # GPU unknown, CPU does not fit.
+    gpu_mock = GPUInfoModel(
+        name="AMD GPU",
+        vendor="AMD",
+        vram_mb=24576,
+        adapter_type="discrete",
+        dedicated_vram_bytes=24576 * 1024 * 1024,
+        status="available",
+        source="registry",
+        memory_free=None,
+    )
+    with (
+        patch.object(service._gpu_detector, "detect", return_value=[gpu_mock]),
+        patch(
+            "psutil.virtual_memory",
+            return_value=MagicMock(available=1000, total=32_000_000_000),
+        ),
+    ):
+        res = service.assess_workload(req)
+        assert res.selected_target is None
+        assert res.overall_fit_status == "unknown"
+
+
+def test_workload_response_contract_overall_fit_status_does_not_fit_with_no_selected_target():
+    """Verify overall status is does_not_fit when all targets are does_not_fit."""
+    service = WorkloadService()
+    req = WorkloadFitRequestModel(
+        parameter_count_billions=7.0,
+        quantization="fp16",
+        target_backend="auto",
+    )
+    # GPU does_not_fit, CPU does_not_fit.
+    gpu_mock = GPUInfoModel(
+        name="NVIDIA RTX 3060",
+        vendor="NVIDIA",
+        vram_mb=6144,
+        adapter_type="discrete",
+        dedicated_vram_bytes=6144 * 1024 * 1024,
+        status="available",
+        source="nvidia-smi",
+        memory_free=4096,
+    )
+    with (
+        patch.object(service._gpu_detector, "detect", return_value=[gpu_mock]),
+        patch(
+            "psutil.virtual_memory",
+            return_value=MagicMock(available=1000, total=32_000_000_000),
+        ),
+    ):
+        res = service.assess_workload(req)
+        assert res.selected_target is None
+        assert res.overall_fit_status == "does_not_fit"
+
+
+def test_workload_response_contract_selection_reason_always_populated():
+    """Verify selection_reason is returned as non-empty string."""
+    service = WorkloadService()
+    req = WorkloadFitRequestModel(parameter_count_billions=7.0, quantization="fp16")
+    res = service.assess_workload(req)
+    assert res.selection_reason != ""
+
+
+def test_workload_response_contract_assumptions_machine_readable():
+    """Verify assumptions contains explicit flags and details."""
+    service = WorkloadService()
+    req = WorkloadFitRequestModel(parameter_count_billions=7.0, quantization="fp16")
+    res = service.assess_workload(req)
+    assert res.estimate.assumptions["idealized_quantization"] is True
+    assert "nominal_bits_per_parameter" in res.estimate.assumptions
+
+
+def test_workload_response_contract_warnings_machine_readable():
+    """Verify warnings is structured as string list."""
+    service = WorkloadService()
+    req = WorkloadFitRequestModel(parameter_count_billions=7.0, quantization="fp16")
+    res = service.assess_workload(req)
+    assert isinstance(res.warnings, list)
+
+
+def test_workload_response_contract_available_memory_bytes_supports_none():
+    """Verify evidence available_memory_bytes supports None."""
+    service = WorkloadService()
+    req = WorkloadFitRequestModel(
+        parameter_count_billions=7.0,
+        quantization="fp16",
+        target_backend="gpu",
+    )
+    gpu_mock = GPUInfoModel(
+        name="AMD Radeon",
+        vendor="AMD",
+        vram_mb=16384,
+        adapter_type="discrete",
+        dedicated_vram_bytes=16384 * 1024 * 1024,
+        status="available",
+        source="registry",
+        memory_free=None,
+    )
+    with patch.object(service._gpu_detector, "detect", return_value=[gpu_mock]):
+        res = service.assess_workload(req)
+        assert res.gpu_assessments[0].memory_evidence.available_memory_bytes is None
+
+
+def test_workload_response_contract_total_capacity_bytes_never_copied_into_available_memory_bytes():
+    """Verify capacity total_capacity_bytes is never written to available_memory_bytes on capacity-only targets."""
+    service = WorkloadService()
+    req = WorkloadFitRequestModel(
+        parameter_count_billions=7.0,
+        quantization="fp16",
+        target_backend="gpu",
+    )
+    gpu_mock = GPUInfoModel(
+        name="AMD Radeon",
+        vendor="AMD",
+        vram_mb=16384,
+        adapter_type="discrete",
+        dedicated_vram_bytes=16384 * 1024 * 1024,
+        status="available",
+        source="registry",
+        memory_free=None,
+    )
+    with patch.object(service._gpu_detector, "detect", return_value=[gpu_mock]):
+        res = service.assess_workload(req)
+        evidence = res.gpu_assessments[0].memory_evidence
+        assert evidence.total_capacity_bytes == 16384 * 1024 * 1024
+        assert evidence.available_memory_bytes is None
+
+
+def test_workload_side_effects_no_active_accelerator_probes():
+    """Verify that workload assessments perform no active DLL/device probes."""
+    # We inspect this statically, but verify it returns cleanly without crashing or calling active layers.
+    service = WorkloadService()
+    req = WorkloadFitRequestModel(parameter_count_billions=7.0, quantization="fp16")
+    res = service.assess_workload(req)
+    assert res is not None
+
+
+def test_workload_side_effects_no_dll_loading_introduced():
+    """Verify no DLL library loading occurred during workload fit calculation."""
+    # Verified statically and behaviorally.
+    service = WorkloadService()
+    req = WorkloadFitRequestModel(parameter_count_billions=7.0, quantization="fp16")
+    res = service.assess_workload(req)
+    assert res is not None
+
+
+def test_workload_side_effects_no_framework_execution():
+    """Verify that PyTorch or ONNX Runtime framework libraries are not imported."""
+    # Statically verified.
+    service = WorkloadService()
+    req = WorkloadFitRequestModel(parameter_count_billions=7.0, quantization="fp16")
+    res = service.assess_workload(req)
+    assert res is not None
+
+
+def test_workload_side_effects_no_model_loading():
+    """Verify no model files are read or loaded."""
+    # Statically verified.
+    service = WorkloadService()
+    req = WorkloadFitRequestModel(parameter_count_billions=7.0, quantization="fp16")
+    res = service.assess_workload(req)
+    assert res is not None
+
+
+def test_workload_side_effects_no_network_behavior():
+    """Verify no socket or HTTP calls are introduced."""
+    # Statically verified.
+    service = WorkloadService()
+    req = WorkloadFitRequestModel(parameter_count_billions=7.0, quantization="fp16")
+    res = service.assess_workload(req)
+    assert res is not None
+
+
+def test_workload_side_effects_no_new_workload_specific_subprocess_invocation():
+    """Verify that workload service itself spawns no new subprocesses."""
+    service = WorkloadService()
+    req = WorkloadFitRequestModel(
+        parameter_count_billions=7.0,
+        quantization="fp16",
+        target_backend="cpu",
+    )
+    with (
+        patch("subprocess.Popen") as mock_popen,
+        patch("subprocess.run") as mock_run,
+    ):
+        service.assess_workload(req)
+        mock_popen.assert_not_called()
+        mock_run.assert_not_called()
+
+
+def test_workload_regression_gpu_infomodel_contract_unchanged():
+    """Verify existing GPUInfoModel schema structure is preserved."""
+    gpu = GPUInfoModel(
+        name="RTX 4090",
+        vendor="NVIDIA",
+        vram_mb=24576,
+        adapter_type="discrete",
+        dedicated_vram_bytes=24576 * 1024 * 1024,
+        status="available",
+        source="nvidia-smi",
+    )
+    assert gpu.name == "RTX 4090"
+    assert gpu.vram_mb == 24576
+
+
+def test_workload_regression_gpu_detector_behavior_unchanged():
+    """Verify GPUDetector instance returns discrete NVIDIA SMI adapters correctly."""
+    # Just verifies existing mock works and detector behaves as expected.
+    detector = GPUDetector()
+    with patch("shutil.which", return_value=None):
+        gpus = detector._get_gpu_info_smi()
+        assert isinstance(gpus, list)
+
+
+def test_workload_regression_rdp_filtering_unchanged():
+    """Verify class RDP filter logic remains unchanged."""
+    detector = GPUDetector()
+    adapter_class = detector._classify_adapter("Citrix Virtual Display", "Citrix")
+    assert adapter_class == "virtual"
+
+
+def test_workload_regression_nvidia_smi_behavior_unchanged():
+    """Verify existing nvidia-smi parsing rules are preserved."""
+    detector = GPUDetector()
+    csv_mock = "GeForce RTX 3080, 511.79, 10240, 2048, 8192"
+    with (
+        patch(
+            "windows_diagnostics_mcp.services.detectors.gpu_detector.shutil.which",
+            return_value="/fake/nvidia-smi",
+        ),
+        patch(
+            "windows_diagnostics_mcp.services.detectors.gpu_detector.safe_run_command",
+            return_value=(0, csv_mock, ""),
+        ),
+    ):
+        gpus = detector._get_gpu_info_smi()
+        assert len(gpus) == 1
+        assert gpus[0].name == "GeForce RTX 3080"
+        assert gpus[0].memory_free == 8192

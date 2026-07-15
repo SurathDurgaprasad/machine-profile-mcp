@@ -3,15 +3,17 @@ import os
 import pathlib
 import shutil
 import time
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 import httpx
 
+from ..models.system import CapabilityStatusModel
 from ..models.ai import (
     AIEnvStatusModel,
     GPUInfoModel,
     OllamaModelInfoModel,
     LocalModelInventoryModel,
     DockerStatusModel,
+    AcceleratorRuntimeEvidenceModel,
 )
 from ..models.metadata import CollectionMetadataModel, WarningItem
 from .detectors.gpu_detector import GPUDetector
@@ -52,6 +54,104 @@ class AIService:
         self._ollama_detector = OllamaDetector()
         self._lmstudio_detector = LMStudioDetector()
         self._docker_detector = DockerDetector()
+
+    def _check_dll(
+        self, dll_name: str, system_root: Optional[str]
+    ) -> CapabilityStatusModel:
+        if not system_root:
+            return CapabilityStatusModel(
+                supported=None,
+                status="unknown",
+                source="none",
+                detail="Windows system root could not be resolved.",
+            )
+
+        import platform
+
+        if platform.system().lower() != "windows":
+            return CapabilityStatusModel(
+                supported=None,
+                status="unknown",
+                source="none",
+                detail="System runtime library discovery is only supported on Windows.",
+            )
+
+        import sys
+
+        is_32bit = sys.maxsize <= 2**31 - 1
+        is_wow64 = is_32bit and "PROCESSOR_ARCHITEW6432" in os.environ
+
+        folders = ["Sysnative", "System32"] if is_wow64 else ["System32"]
+        candidates = []
+        for folder in folders:
+            path = os.path.join(system_root, folder)
+            norm = os.path.normpath(path)
+            if norm not in candidates:
+                candidates.append(norm)
+
+        found_path = None
+        failures = []
+
+        for dir_path in candidates:
+            file_path = os.path.join(dir_path, dll_name)
+            try:
+                # Check existence without loading
+                if os.path.isfile(file_path):
+                    found_path = file_path
+                    break
+            except PermissionError:
+                failures.append(
+                    (
+                        "PermissionError",
+                        "Permission denied while checking the Windows system library location.",
+                    )
+                )
+            except OSError:
+                failures.append(
+                    (
+                        "OSError",
+                        "Operating system error while checking the Windows system library location.",
+                    )
+                )
+            except Exception:
+                failures.append(("Exception", "Failed to query system path."))
+
+        if found_path:
+            return CapabilityStatusModel(
+                supported=True,
+                status="available",
+                source="filesystem-check",
+                detail=f"Library present at {found_path}.",
+            )
+
+        if failures:
+            first_fail_type, first_fail_msg = failures[0]
+            return CapabilityStatusModel(
+                supported=None,
+                status="error",
+                source="filesystem-check",
+                detail=first_fail_msg,
+            )
+
+        return CapabilityStatusModel(
+            supported=False,
+            status="unavailable",
+            source="filesystem-check",
+            detail="Library was not found in standard system locations.",
+        )
+
+    def _get_accelerator_evidence(self) -> AcceleratorRuntimeEvidenceModel:
+        system_root = os.environ.get("SystemRoot") or os.environ.get("windir")
+
+        cuda = self._check_dll("nvcuda.dll", system_root)
+        d3d12 = self._check_dll("d3d12.dll", system_root)
+        directml = self._check_dll("directml.dll", system_root)
+
+        return AcceleratorRuntimeEvidenceModel(
+            cuda_driver_library_present=cuda,
+            d3d12_runtime_library_present=d3d12,
+            system_directml_library_present=directml,
+        )
 
     def _get_ollama_details(self) -> Tuple[bool, bool, List[OllamaModelInfoModel]]:
         """
@@ -310,6 +410,13 @@ class AIService:
             )
             status = "partial"
 
+        # Passive Accelerator Evidence
+        try:
+            accelerator_evidence = self._get_accelerator_evidence()
+        except Exception as e:
+            logger.error(f"Error resolving accelerator evidence: {e}")
+            accelerator_evidence = AcceleratorRuntimeEvidenceModel()
+
         # Centralized path/warning sanitization at the data boundary
         virtual_envs = [sanitize_user_path(v) for v in virtual_envs]
 
@@ -346,4 +453,5 @@ class AIService:
             collection_metadata=metadata,
             local_models=local_models,
             docker=docker_status,
+            accelerator_evidence=accelerator_evidence,
         )
